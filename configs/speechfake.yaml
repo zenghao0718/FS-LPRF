@@ -1,0 +1,50 @@
+data:
+  data_path: ""
+  rir_root: ""
+  max_samples: 64000
+  fix_len: true
+  trim_silence: true
+  do_augment: true
+  augment_type: rawboost
+
+model:
+  frontend: XLSR
+  frontend_path: pretrained/xlsr2_300m.pt
+  frontend_dim: 1024
+  num_layers: 25
+  layer_attn_head: 4
+  reduce_dim: false
+  attn_cfg: default
+  have_padding_mask: false
+  freeze_frontend: true
+  bottleneck_dim: 256
+
+train:
+  seed: 42
+  way: 3
+  support_per_class: 5
+  total_query_per_episode: 15
+  episodes_per_step: 8
+  audio_microbatch_size: 8
+  total_steps: 4000
+  optimizer: AdamW
+  learning_rate: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+  warmup_steps: 100
+  min_learning_rate: 0.000001
+  gradient_clip: 1.0
+  validation_interval_steps: 200
+
+validation:
+  shot: 10
+  seeds: [17, 42, 71, 100, 123]
+
+test:
+  shot: 10
+  seeds: [17, 42, 71, 100, 123]
+
+runtime:
+  device: cuda:0
+  num_workers: 0
+  output_dir: outputs/speechfake_fs_lprf

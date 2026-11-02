@@ -1,0 +1,4 @@
+[submodule "third_party/tomatoDD"]
+	path = third_party/tomatoDD
+	url = https://github.com/XIAOYixuan/tomatoDD.git
+	branch = interspeech25-layer-wise
