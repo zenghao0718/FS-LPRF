@@ -34,11 +34,14 @@ train:
   warmup_steps: 100
   min_learning_rate: 0.000001
   gradient_clip: 1.0
-  validation_interval_steps: 200
+  light_validation_interval_steps: 200
+  full_validation_interval_steps: 800
 
 validation:
   shot: 10
   seeds: [17, 42, 71, 100, 123]
+  light_seed: 42
+  light_max_query_per_class: 1000
 
 test:
   shot: 10

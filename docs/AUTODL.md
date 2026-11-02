@@ -89,6 +89,8 @@ p.write_text(yaml.safe_dump(cfg, sort_keys=False))
 PY
 ```
 
+若沿用旧配置，请删除 `train.validation_interval_steps`，加入 `train.light_validation_interval_steps: 200`、`train.full_validation_interval_steps: 800`、`validation.light_seed: 42`、`validation.light_max_query_per_class: 1000`。旧正式训练目录不会自动迁移为新调度；请保留它们并另选新输出目录。
+
 默认 `num_workers=0` 最容易核对裁剪复现；需要提高吞吐量时可在训练开始前改为 4 等值，之后验证与恢复保持一致。`audio_microbatch_size=8` 是 A100 默认；如显存受其他进程影响，仅调整音频微批次，不静默改变每 Step Episode 数、每 Episode Support/Query 或训练预算。
 
 ## 5. 开跑前检查
@@ -107,11 +109,13 @@ python scripts/check_model.py --config configs/speechfake.autodl.yaml \
 python scripts/train.py --config configs/speechfake.autodl.yaml
 ```
 
-共 4000 次优化器更新，每步 8 个独立 Episode。每 200 Steps 及最后一步执行五种子 Dev 验证，以五种子 Macro EER 均值最低者保存 `best.pt`；每步更新 `last.pt`。恢复时保留原输出目录及 Dev Manifest：
+共 4000 次优化器更新，每步 8 个独立 Episode。每 200 Steps 的非 800 倍数执行轻量 Dev（seed 42、每类最多 1000 Query）；800/1600/2400/3200/4000 先保存独立节点，再执行完整五种子 Dev。共 15 次轻量 + 5 次完整，只有完整 Dev 的 Macro EER 均值参与 Best，平局取较早节点。Best 由 JSON 索引指向现有节点，不复制 `best.pt`、不生成逐步 `last.pt`。中断最多损失最近节点后 799 个未保存更新。
+
+恢复时保留原配置、两个 Dev Manifest 和完整输出历史，使用最新可用节点。若该节点的完整 Dev 未成功结束，先补做再继续下一 Step：
 
 ```bash
 python scripts/train.py --config configs/speechfake.autodl.yaml \
-  --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf/checkpoints/last.pt
+  --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf/checkpoints/step_0800.pt
 ```
 
 可在另一个终端查看日志和 TensorBoard：
@@ -124,11 +128,11 @@ tensorboard --logdir /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf/tensorboar
 
 ## 7. Test 10-shot
 
-训练完成后，只使用选出的 Best Checkpoint：
+本次重构不执行 Test。后续训练、Dev 选模与调参全部完成后，用以下命令解析最终 Best 节点进行正式 Test（亦可将 `best` 换成明确的 `step_XXXX.pt` 路径）：
 
 ```bash
 python scripts/evaluate.py --config configs/speechfake.autodl.yaml \
-  --checkpoint /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf/checkpoints/best.pt \
+  --checkpoint best \
   --shot 10
 ```
 
@@ -136,6 +140,6 @@ python scripts/evaluate.py --config configs/speechfake.autodl.yaml \
 
 ## 8. 交付产物与范围
 
-正式输出目录包含 `config_resolved.yaml`、`train.log`、`episodes.jsonl`、`tensorboard/`、`checkpoints/best.pt`、`checkpoints/last.pt`、`evaluation/`。续跑时这些文件应一起保留，尤其是原 Dev Manifest。
+正式输出目录包含 `config_resolved.yaml`、`run_state.json`、`train.log`、Episode 日志、`tensorboard/`、5 份 `checkpoints/step_XXXX.pt`、`checkpoints/best_checkpoint.json` 及 `evaluation/`。`evaluation/full/` 每个节点有逐种子/逐类 Mean±Std/Macro/预测五份 CSV，以及全部写入成功后才创建的完成标记；`evaluation/light/` 独立保存监控报告。续跑应保留整个目录，尤其是原始完整和轻量 Dev Manifest。具体文件名和恢复限制见 [VALIDATION_SCHEDULE.md](VALIDATION_SCHEDULE.md)。
 
 不要将数据、RIR、预训练文件或任何训练 Checkpoint 提交 Git。当前阶段不运行真实 0-shot、其他 Shot、基线、消融或 ASVspoof。原型库构建脚本仅供后续阶段调用，已通过合成数据接口测试。

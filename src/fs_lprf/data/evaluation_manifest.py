@@ -2,6 +2,11 @@ import hashlib
 import json
 from pathlib import Path
 import random
+import copy
+import os
+import tempfile
+
+DEV_SEEDS = [17, 42, 71, 100, 123]
 
 
 def dataset_fingerprint(dataset):
@@ -71,3 +76,96 @@ def validate_episode_manifest(dataset, manifest):
             union.update(support)
         if union & set(query) or union | set(query) != pool:
             raise ValueError(f"Support/Query mismatch for {name}")
+
+
+def _expected_light_manifest(dataset, full_manifest, full_manifest_path, shot, seed,
+                             max_query_per_class):
+    """Derive the monitor subset without consuming any training/global RNG state."""
+    if dataset.split != "dev" or full_manifest.get("split") != "dev":
+        raise ValueError("Light validation may only use the original Dev manifest")
+    if type(shot) is not int or type(seed) is not int or shot != 10 or seed != 42 or full_manifest.get("shot") != shot:
+        raise ValueError("Light Dev requires 10-shot and the original seed 42 Support")
+    if type(max_query_per_class) is not int or not 1 <= max_query_per_class <= 1000:
+        raise ValueError("Light Query cap must be an integer between 1 and 1000")
+    if full_manifest.get("seeds") != DEV_SEEDS or len(dataset.fake_classes) != 32:
+        raise ValueError("Light Dev requires the original five-seed, 32-Fake-class manifest")
+    source_bytes = Path(full_manifest_path).read_bytes()
+    if json.loads(source_bytes) != full_manifest:
+        raise ValueError("Source Dev manifest on disk does not match the supplied manifest")
+    fingerprint = dataset_fingerprint(dataset)
+    if full_manifest.get("dataset_fingerprint") != fingerprint:
+        raise ValueError("Source Dev manifest data fingerprint does not match the dataset")
+    try:
+        validate_episode_manifest(dataset, full_manifest)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError("Invalid source Dev Support/Query manifest") from error
+    source_sha = hashlib.sha256(source_bytes).hexdigest()
+    classes = ["real"] + dataset.fake_classes
+    queries, quotas = {}, {}
+    for name in classes:
+        candidates = sorted(full_manifest["queries"][name])
+        quota = min(max_query_per_class, len(candidates))
+        # The original validator rejects empty classes; small nonempty classes use all IDs.
+        quotas[name] = quota
+        if len(candidates) > quota:
+            material = json.dumps([source_sha, seed, name], ensure_ascii=False,
+                                  separators=(",", ":")).encode("utf-8")
+            class_seed = int.from_bytes(hashlib.sha256(material).digest(), "big")
+            candidates = sorted(random.Random(class_seed).sample(candidates, quota))
+        queries[name] = candidates
+    return dict(version=1, kind="dev_light", split="dev", shot=shot, seed=seed,
+                seeds=[seed], max_query_per_class=max_query_per_class,
+                source_manifest_sha256=source_sha, dataset_fingerprint=fingerprint,
+                classes=classes, supports={str(seed): copy.deepcopy(full_manifest["supports"][str(seed)])},
+                query_quotas=quotas, queries=queries, loader_order=full_manifest["loader_order"])
+
+
+def _validate_light_payload(manifest, expected, full_manifest):
+    if manifest != expected:
+        raise ValueError("Saved light Dev manifest does not match its source SHA, data, light configuration or deterministic selection")
+    for name in expected["classes"]:
+        queries = manifest["queries"][name]
+        support_union = {uid for value in full_manifest["supports"].values() for uid in value[name]}
+        if not queries or len(queries) != len(set(queries)) or set(queries) & support_union:
+            raise ValueError(f"Invalid light Dev Query for {name}")
+        if not set(queries) <= set(full_manifest["queries"][name]):
+            raise ValueError(f"Light Dev Query is outside the original Dev Query for {name}")
+
+
+def validate_light_manifest(dataset, manifest, full_manifest, full_manifest_path,
+                            shot=10, seed=42, max_query_per_class=1000):
+    expected = _expected_light_manifest(dataset, full_manifest, full_manifest_path,
+                                        shot, seed, max_query_per_class)
+    _validate_light_payload(manifest, expected, full_manifest)
+
+
+def load_or_create_light_manifest(dataset, full_manifest, full_manifest_path, path,
+                                   shot=10, seed=42, max_query_per_class=1000):
+    """Persist a fixed monitoring subset; never resample Support or overwrite a saved subset."""
+    expected = _expected_light_manifest(dataset, full_manifest, full_manifest_path,
+                                        shot, seed, max_query_per_class)
+    path = Path(path)
+    if path.exists():
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        _validate_light_payload(manifest, expected, full_manifest)
+        return manifest
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=path.name + ".", suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(expected, handle, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        # A fully-written same-filesystem hard link publishes atomically and refuses overwrite.
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            manifest = json.loads(path.read_text(encoding="utf-8"))
+            _validate_light_payload(manifest, expected, full_manifest)
+            return manifest
+        return expected
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)

@@ -80,7 +80,7 @@ XLS-R 参数冻结、无梯度，调用 `model.train()` 后仍保持前端 eval�
 
 每 Episode 独立均匀抽取 Real + 两个不同 Fake，每类 5 Support；默认每 Episode 15 Query、每 Step 8 Episode、音频微批次 8。每个 Episode 独立计算均值原型、余弦分类、Support 可靠性及逐层 CE。类间距离只累加 Real–Fake；类内离散为各类均值之和；可靠性为 `(inter+1e-8)/(intra+1e-8)`，开平方归一化后只 detach α。Support 原型仍保留梯度。一个 Step 的 Episode Loss 取平均后只 backward 一次、AdamW 更新一次。
 
-固定训练种子 42、4000 Steps、AdamW LR 1e-4、betas (0.9,0.999)、weight decay 1e-4、warmup 100 Steps、cosine 降至 1e-6、梯度裁剪 1.0。配置校验阻止修改固定模型与协议；Query 数、Episode 数、音频微批次和验证间隔按文档参数化。
+固定训练种子 42、4000 Steps、AdamW LR 1e-4、betas (0.9,0.999)、weight decay 1e-4、warmup 100 Steps、cosine 降至 1e-6、梯度裁剪 1.0。本轮依据训练验证重构 v1.0 固定每 Step 8 Episode、每 Episode 15 Query；音频微批次及两档验证周期通过配置管理，模型与训练算法不变。
 
 ## Dev / Test 与恢复
 
@@ -88,16 +88,28 @@ Dev/Test 都是 10-shot、种子 `[17,42,71,100,123]`。每个种子的 Real Sup
 
 所有 split 均保留官方随机裁剪。每次评估按种子重置 Python/NumPy/PyTorch CPU/CUDA RNG，固定数据顺序和 DataLoader generator；workers 由 `torch.initial_seed()` 初始化，`persistent_workers=False`。同一 Dev 种子跨 Checkpoint 的裁剪序列一致，不同种子允许不同。结束后恢复训练 RNG 与训练模式。
 
-默认每 200 Steps 及最后一步验证，按五种子 Dev 类别宏平均 EER 的均值选择 `best.pt`；每步保存 `last.pt`。恢复同时加载模型后端、Optimizer、Scheduler、训练 RNG，核对训练数据指纹与 Dev Manifest SHA-256：
+调度依据 `FS-LPRF_Codex_Training_Validation_Refactor_v1.0.md` 更新为：
+
+- Step 200/400/600 等非 800 倍数：轻量 Dev，共 15 次。只用 seed=42 的原始 10-shot Support；每类从完整 Dev 的固定 Query 中最多取 1000 条，小类使用全部剩余 Query。32 Fake 类全部参加、Real Query 共享，仍逐类等权 Macro。轻量结果仅用于监控，不选 Best、不存 CKPT。
+- Step **800/1600/2400/3200/4000**：先保存 `checkpoints/step_XXXX.pt`，再执行完整五种子、32 类、全量 Query 的 Dev。每轮输出 160 行逐类逐种子明细、32 行逐类 Mean±Std、Macro 和逐条预测，并在终端/日志打印全部类别。里程碑不重复轻量验证。
+- 仅完整 Dev 的五种子 Macro EER 均值更新 Best，平局取较早 Step。`checkpoints/best_checkpoint.json` 指向真实节点，不再每 Step 写 `last.pt`，也不复制 `best.pt`。默认共 5 份可恢复节点。
+
+轻量清单固定保存为 `evaluation/dev_light_manifest.json`，绑定源完整清单 SHA-256、数据指纹与配额；使用 SHA 派生的局部 RNG，不改变训练 RNG。源文件、数据或轻量配置变化时拒绝复用。原完整 Dev/Test Support/Query 排除规则不变。
+
+恢复需要原输出目录、配置、两个 Dev Manifest、节点和完整 Dev 历史。模型后端、Optimizer、Scheduler 与 RNG 一起恢复。节点已有但完整 Dev 完成标记/报告缺失时，会先补做验证再执行下一 Step。完成标记绑定节点和全部 5 份报告的 SHA-256；Best 从已完成历史重建。目录中有未来节点时拒绝倒退覆盖，请恢复最新节点；先前节点历史损坏则需恢复匹配的完整文件。中断最多丢失上一里程碑后未保存的 **799 Steps**，这是降低存盘频率的明确权衡。
 
 ```bash
 python scripts/train.py --config configs/speechfake.yaml
-python scripts/train.py --config configs/speechfake.yaml --resume outputs/speechfake_fs_lprf/checkpoints/last.pt
-python scripts/evaluate.py --config configs/speechfake.yaml \
-  --checkpoint outputs/speechfake_fs_lprf/checkpoints/best.pt --shot 10
+python scripts/train.py --config configs/speechfake.yaml --resume outputs/speechfake_fs_lprf/checkpoints/step_0800.pt
+# 完成训练和Dev选模后，才执行正式Test：
+python scripts/evaluate.py --config configs/speechfake.yaml --checkpoint best --shot 10
+# 也可明确指定任一节点路径（测试应使用最终选出的节点）：
+python scripts/evaluate.py --config configs/speechfake.yaml --checkpoint outputs/speechfake_fs_lprf/checkpoints/step_0800.pt --shot 10
 ```
 
-正式命令只在 AutoDL 执行。输出包含解析配置、日志、TensorBoard、Episode 类别和 Support/Query ID、Dev/Test Manifest、各类指标、各种子宏平均、五种子 Mean/Std 与逐 Query 的 ID/类别/种子/标签/连续分数/预测。指标以 Fake=1、分数为 Fake-minus-Real；ACC 使用 `score>=0`，EER 阈值扫描，AUC/AP 使用连续分数，先逐类计算再宏平均。Std 使用 `numpy.std(ddof=0)`。
+以上正式命令只在 AutoDL 执行。每步训练实时写终端、`train.log` 和 TensorBoard 的 `train/loss`、`train/learning_rate`、`train/gradient_norm`；验证分开写 `dev/light_macro_*` 和 `dev/full_macro_*_mean/std`，不混为一条曲线。恢复时 `purge_step` 隐藏未保存训练步的旧事件，Episode 追加到新的 resume 日志段，保留旧尝试记录。
+
+报告位于 `evaluation/light/` 与 `evaluation/full/`，每个 Step 独立命名。CSV 数值为比例（0~1），日志显示百分比；EER threshold 仅为 EER 产物，ACC 始终按 `score>=0` 判断 Fake。Test 不参与训练内监控、选模或调参，原 Test 输出格式不变。详细配置、文件清单及恢复行为见 [docs/VALIDATION_SCHEDULE.md](docs/VALIDATION_SCHEDULE.md)。
 
 ## 轻量测试
 
