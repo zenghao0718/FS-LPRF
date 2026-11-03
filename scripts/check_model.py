@@ -9,16 +9,14 @@ import soundfile as sf
 import torch
 import _bootstrap
 from fs_lprf.config import common_parser, load_config
-from fs_lprf.upstream import enable_upstream, UPSTREAM_COMMIT
+from fs_lprf.provenance import UPSTREAM_COMMIT
 from fs_lprf.utils.seed import seed_all
 from fs_lprf.models.fs_lprf_model import FSLPRF
 from fs_lprf.models.frontend_compat import LOAD_REPORT
 from fs_lprf.engine.trainer import make_optimizer
 from fs_lprf.engine.checkpoint import save_checkpoint, load_checkpoint
 
-enable_upstream()
-from tomato.data.fad_trim import FADTrim
-from tomato.data import audio_util
+from fs_lprf.data.audio import FADTrim
 
 
 class SmokeAudio(FADTrim):

@@ -8,7 +8,7 @@ import shutil
 import time
 import urllib.request
 import _bootstrap
-from fs_lprf.upstream import XLSR_URL, XLSR_BYTES, XLSR_SHA256
+from fs_lprf.provenance import XLSR_URL, XLSR_BYTES, XLSR_SHA256
 
 URL = XLSR_URL
 

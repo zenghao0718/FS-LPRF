@@ -12,7 +12,7 @@ from fs_lprf.engine.trainer import make_optimizer, optimize_step
 from fs_lprf.engine.checkpoint import save_checkpoint, load_checkpoint
 from fs_lprf.models.frontend_compat import load_official_checkpoint
 from fs_lprf.utils.seed import seed_all
-from fs_lprf.upstream import enable_upstream, UPSTREAM_COMMIT, UPSTREAM
+from fs_lprf.provenance import UPSTREAM_COMMIT
 
 
 class SyntheticDataset(torch.utils.data.Dataset):
@@ -127,17 +127,12 @@ def test_protocol_configuration_rejects_unrequested_architecture_changes(config,
     assert load_config(path, ["train.audio_microbatch_size=1"])["train"]["audio_microbatch_size"] == 1
 
 
-def test_upstream_imports_and_exact_submodule_revision():
-    import subprocess
-    enable_upstream()
-    from tomato.models.frontend_only import XLSRTimeAttnOnly
-    from tomato.data.fad_trim import GeneralFAD
-    from tomato.train_util.eer import compute_eer
+def test_integrated_imports_and_historical_source_revision():
+    from fs_lprf.data.audio import GeneralFAD
+    from fs_lprf.data.speechfake_dataset import SpeechFakeDataset
+    from fs_lprf.utils.metrics import compute_eer
     from fs_lprf.models.fs_lprf_model import FSLPRF
-    assert issubclass(FSLPRF, XLSRTimeAttnOnly)
-    assert issubclass(__import__("fs_lprf.data.speechfake_dataset", fromlist=["SpeechFakeDataset"]).SpeechFakeDataset, GeneralFAD)
-    revision = subprocess.check_output(["git", "-c", f"safe.directory={UPSTREAM.as_posix()}",
-                                        "-C", str(UPSTREAM), "rev-parse", "HEAD"], text=True).strip()
-    assert revision == UPSTREAM_COMMIT
-    assert not subprocess.check_output(["git", "-c", f"safe.directory={UPSTREAM.as_posix()}",
-                                        "-C", str(UPSTREAM), "diff", "--name-only"], text=True).strip()
+    assert issubclass(FSLPRF, torch.nn.Module)
+    assert issubclass(SpeechFakeDataset, GeneralFAD)
+    assert compute_eer.__module__ == "fs_lprf.utils.metrics"
+    assert UPSTREAM_COMMIT == "88efe1376dfc5f5b9b62d016d33a7381c158d8af"

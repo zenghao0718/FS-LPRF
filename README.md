@@ -2,16 +2,17 @@
 
 依据 `FS-LPRF_Method_Design_v2.4.md` 与 `FS-LPRF_Phase1_Codex_Implementation_Spec_v1.3.md` 实施。第一阶段仅包含 SpeechFake-BD：3-way episodic training、五种子 Dev 选模与 Test 10-shot。正式训练、Dev/Test 和真实原型库构建由用户在 AutoDL 执行；本地仅做合成数据单元测试与真实 XLS-R 小批量 Smoke Test。
 
-## 官方代码复用
+## 整合的官方代码与独立源码
 
-Layer-Wise：[XIAOYixuan/tomatoDD](https://github.com/XIAOYixuan/tomatoDD)，分支 `interspeech25-layer-wise`，固定 commit `88efe1376dfc5f5b9b62d016d33a7381c158d8af`，以 `third_party/tomatoDD` Submodule 引用。上游文件保持原样。
+项目已将实际使用的 Layer-Wise 代码整合到自身功能模块，**普通 `git clone` 即可获得全部项目源码，无需 Git Submodule 或外部 `tomato` 包**。代码来源为 [XIAOYixuan/tomatoDD](https://github.com/XIAOYixuan/tomatoDD) 的 `interspeech25-layer-wise` 分支、固定 commit `88efe1376dfc5f5b9b62d016d33a7381c158d8af`；模型与实验协议保持不变。
 
-- `GeneralFAD` / `FADTrim` / `audio_util`：读取、16 kHz 重采样、第一声道、首尾静音裁剪、−20 dB RMS、重复补足、随机 4 秒裁剪。
-- `RawBoostAudioAugmentation`：RIR 1/3、Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost。项目子类只覆盖 RIR 资源路径。
-- `XLSRAdapterBase.extract_features()` 与 `XLSRTimeAttnOnly`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention。
-- `ClassificationBase.state_dict()`：保存时排除冻结前端；EER 使用官方 `compute_eer`。
+- `src/fs_lprf/data/audio.py`：保留 GeneralFAD/FADTrim 实际使用的读取、16 kHz 重采样、第一声道、首尾静音裁剪、−20 dB RMS、重复补足和随机 4 秒裁剪。
+- `src/fs_lprf/data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 资源路径仍由项目配置指定。
+- `src/fs_lprf/models/xlsr.py`、`xlsr_layers.py`、`xlsr_attention.py`：官方 Fairseq XLS-R-300M 的卷积、Transformer、自注意力及必要基础组件，直接加载原始官方权重并保留全部参数名称。未整合 Whisper、HuBERT、AASIST、FACodec 或其他无关模型。
+- `src/fs_lprf/models/fs_lprf_model.py`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention 与共享 `Linear(1024,256)`；仍只有 364800 个可训练参数，训练 Checkpoint 仍排除冻结前端。
+- `src/fs_lprf/utils/metrics.py`：整合官方 DET/EER，保留稳定排序、阈值和数值约定。
 
-上游仓库未声明整体许可证；保留来源和 Submodule 引用，不将其源码复制后作为本项目代码再分发。
+来源、作者、逐文件映射和已有许可声明见 [docs/CODE_PROVENANCE.md](docs/CODE_PROVENANCE.md)。`src/fs_lprf/provenance.py` 仅保存来源 commit 与官方权重信息；既有 Checkpoint/原型库中的 `upstream_commit` 字段及其值保持不变，兼容原有恢复与 Best 索引。
 
 ## 环境
 
@@ -46,7 +47,7 @@ python scripts/download_frontend.py
 
 默认写入 `pretrained/xlsr2_300m.pt`，同时记录来源、文件大小和 SHA-256。脚本使用官方 HTTP Range 分段续传；重试时保持相同 `--connections`。合并前检查 SHA-256，保留已下载分片；文件已完整且校验正确时直接复用，不再发起网络下载。该官方完整训练快照实际为 **3,808,868,242 字节**，不是文档估计的约 1.2GB。数据、权重、缓存和输出均被 Git 忽略。
 
-原始文件保存 `cfg.model` 和 `model`；上游 `tools/fairseq_model_converter.py` 期望先用 Fairseq 解析并导出 `cfg: Namespace`、`state_dict`。项目在上游 `w2v2` 模块的读取边界完成等价的内存封装适配，保留原始 `.pt` 与全部张量，不安装旧版 Fairseq、不改特征提取代码。只补齐 Fairseq 自身的历史默认配置字段，依据 [Fairseq v0.12.2 的 Wav2Vec2Config](https://github.com/facebookresearch/fairseq/blob/v0.12.2/fairseq/models/wav2vec/wav2vec2.py)。加载首先尝试默认 `torch.load(..., map_location="cpu")`；仅当 weights-only 兼容错误且文件 SHA-256 与已验证官方文件完全一致时，才允许 `weights_only=False`。不会全局替换 `torch.load`。
+原始文件保存 `cfg.model` 和 `model`；`models/frontend_compat.py` 直接在加载边界完成等价的内存适配，供整合后的 XLS-R 读取，保留原始 `.pt` 与全部张量，不重新转换权重、不安装旧版 Fairseq。只补齐 Fairseq 自身的历史默认配置字段，依据 [Fairseq v0.12.2 的 Wav2Vec2Config](https://github.com/facebookresearch/fairseq/blob/v0.12.2/fairseq/models/wav2vec/wav2vec2.py)。加载前始终校验官方 SHA-256，再首先尝试默认 `torch.load(..., map_location="cpu")`；仅当 weights-only 兼容错误且哈希已验证时，才允许 `weights_only=False`。不会全局替换 `torch.load`。
 
 ## Manifest 和路径配置
 
@@ -121,7 +122,7 @@ python -m pytest -q
 python scripts/check_model.py --config configs/speechfake.yaml
 ```
 
-Pytest 使用合成向量和临时 WAV，包含梯度、损失聚合、一次更新、音频处理、五种子固定划分、0/2 workers 的裁剪复现、RNG 恢复、合成 33 类原型库与 Checkpoint 往返测试。`check_model.py` 使用正式模型、真实权重和一条合成 4 秒 WAV，核对 25 组 Hidden States、池化/投影形状、前端冻结、所有层 Attention 与共享 Bottleneck 梯度，以及官方后端 Checkpoint 保存逻辑；不执行优化器更新。报告写入 `outputs/local_smoke/model_report.json`。本地实测记录见 [docs/LOCAL_VALIDATION.md](docs/LOCAL_VALIDATION.md)。
+Pytest 使用合成向量和临时 WAV，包含梯度、损失聚合、一次更新、音频处理、五种子固定划分、0/2 workers 的裁剪复现、RNG 恢复、合成 33 类原型库与 Checkpoint 往返测试，并覆盖阻止外部包导入时的全部模块加载、小型 Transformer 与原固定版本输出对照、逐层 Attention 数值/梯度及 EER 同分阈值。`check_model.py` 使用正式模型、真实权重和一条合成 4 秒 WAV，核对 25 组 Hidden States、池化/投影形状、前端冻结、所有层 Attention 与共享 Bottleneck 梯度，以及原有后端 Checkpoint 保存逻辑；不执行优化器更新。报告写入 `outputs/local_smoke/model_report.json`。本地实测记录见 [docs/LOCAL_VALIDATION.md](docs/LOCAL_VALIDATION.md)。
 
 ## 0-shot 接口（本阶段仅合成测试）
 

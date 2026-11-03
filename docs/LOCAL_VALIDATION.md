@@ -2,6 +2,8 @@
 
 日期：2026-11-02。范围：合成向量、临时 WAV、真实官方 XLS-R 前端的小批量验证。未下载 SpeechFake-BD、未运行正式训练或完整 Dev/Test、未构建真实 0-shot 原型库。本记录不是实验结果。
 
+本文保留历史验收事实；2026-11-03 移除 Submodule 后的工程整合与验证记录见末尾。早期关于上游目录和 Submodule 的描述仅代表当时结构。
+
 ## 最终环境
 
 - 解释器：`D:\FS-LPRF\.venv\Scripts\python.exe`
@@ -84,3 +86,52 @@ PyTorch CUDA 安装包也经过官方 wheel 索引 SHA-256 校验：`138c66dcd0e
 Smoke 入口曾发现 CUDA 显存统计在设备初始化前调用的问题，已修正初始化顺序并以上述命令重跑通过。可选 FFmpeg 扩展在本机未加载，音频使用官方 soundfile 流程，所有音频检查通过；不为此额外安装或替换预处理组件。
 
 详细机器可读报告与控制台记录位于 `outputs/local_smoke/`，按要求被 Git 忽略。AutoDL A100 40GB 的正式环境、数据检查、训练、恢复和 Test 10-shot 步骤见 [AUTODL.md](AUTODL.md)；本地未执行这些正式实验。
+
+## 2026-11-03：移除 Submodule、整合必要代码
+
+本次只做工程组织重构。实际使用的音频处理、RIR/RawBoost Algorithm 5、Fairseq XLS-R Transformer、时间 Attention 和 DET/EER 分别整合到 `data/`、`models/`、`utils/`；详细来源及文件映射见 [CODE_PROVENANCE.md](CODE_PROVENANCE.md)。没有创建集中存放上游工程的目录，也没有整合其他模型或数据集实现。
+
+### 环境与重构前基准
+
+沿用项目现有 `.venv`：Python 3.11.18、torch/torchaudio 均为 `2.7.1+cu128`、CUDA runtime 12.8、RTX 5060（Compute Capability 12.0）。`requirements.txt` 中两项 `==2.7.1` 约束及其他依赖保持不变，未创建新环境、重复安装 PyTorch 或引入新依赖。
+
+重构前先运行原单测：**89 passed、0 failed，36.84 秒**。确认本地已有官方 XLS-R 文件，大小 3,808,868,242 字节；加载时校验 SHA-256 `b08927597f2c9eb2ebd7dcc3ac78ee4b5f6021cbac4b3a6c5a9deec445d80ed9`，没有重新下载或转换权重。
+
+在旧源码仍存在时，固定 seed=42、合成四秒 WAV，记录隐藏状态、池化/投影、初始后端参数及诊断梯度；另记录固定种子的多采样率/多声道/静音音频、RIR、RawBoost 5、RIR→RawBoost 和含同分的 EER 结果，并保存原实现生成的后端 Checkpoint。另从旧实现生成小型合成 Transformer 输出，作为不包含预训练权重的持久回归样本 `tests/fixtures/xlsr_small_reference.json`。
+
+### 整合前后行为与 Checkpoint 对照
+
+逐元素对照 **6,419,200 个张量元素**，包含全部 25 组隐藏表示、Attention、Bottleneck、后端初始参数和梯度、独立合成 Attention 输入以及上述音频与增强结果：**全部完全相等，最大绝对误差 0**。EER/AUC/AP/ACC 及 EER 阈值也与基准一致。
+
+官方 XLS-R 的 **429 个参数键及全部形状**保持一致，原始文件严格加载成功。可训练参数仍只有 `time_attn_mlp1`、`bottleneck_proj.weight`、`bottleneck_proj.bias`，名称/形状不变，共 **364800** 个参数。冻结前端仍不写入训练 Checkpoint；整合前真实模型生成的旧后端 Checkpoint 已由新实现成功加载并恢复参数。
+
+`UPSTREAM_COMMIT` 原值迁移到 `provenance.py`，`upstream_commit`、Checkpoint schema、Optimizer/Scheduler、RNG、Best 索引和恢复协议没有改变。`engine/checkpoint.py` 与原型库模块仅调整该常量的导入位置；训练器、损失、原型/α、验证调度、采样协议及实验配置未修改。
+
+### 子模块移除后的完整验收
+
+确认子模块工作区无用户修改后，依次解除注册、移除 Gitlink 和空 `.gitmodules`，清理对应 `.git/modules/third_party/tomatoDD` 元数据。随后在旧源码目录已不存在的条件下执行：
+
+```powershell
+& .\.venv\Scripts\python.exe -m pip check
+& .\.venv\Scripts\python.exe -m pytest -q --junitxml=outputs/integration_validation/pytest.xml -o faulthandler_timeout=60
+& .\.venv\Scripts\python.exe scripts/check_model.py --config configs/speechfake.yaml --report outputs/integration_validation/model_report.json
+```
+
+- `pip check`：**No broken requirements found.**
+- Pytest：**98 passed、0 failed、0 skipped，38.82 秒**。在保留原测试行为覆盖的基础上新增 9 项回归：隔离进程阻止 `tomato`/Fairseq 外部导入、原小型 Transformer 输出及参数形状、逐层 Attention 独立数值计算及梯度、后端键/参数量、第一声道与 RMS、三组 EER 阈值/同分样本、安全加载 fallback 与张量不变性。
+- 73 条告警：原有 RawBoost/librosa 弃用提示 72 条，另有小型 Transformer 回归触发的 `torch.nn.utils.weight_norm` 弃用提示 1 条。保留原 API 以保持 `weight_g`/`weight_v` 参数名称和数值兼容。
+- 首次将完整单测与真实 Smoke 并行验收时出现一次 Windows 双 worker 卡顿；停止该次运行后，独立用例复测 **1 passed，23.31 秒**，串行完整复测如上通过。未修改 DataLoader、worker 数或实验配置绕过用例。
+
+真实 XLS-R Smoke：**passed**，仅一条合成四秒 WAV，无优化器更新：
+
+- 25 组 Hidden States：第 0 组 `[1,199,1024]`，其余 24 组 `[199,1,1024]`。
+- Attention 输出 `[1,25,1024]`；Bottleneck 输出 `[1,25,256]`。
+- 前端所有参数冻结且无梯度，调用 `model.train()` 后前端仍为 eval。
+- 全部 25 层 Attention 与共享 Bottleneck 均有有限、非零梯度；范数分别为 187.517044、41.353943、0.176679，与旧实现一致。
+- 可训练参数 **364800**；后端 Checkpoint **1,506,965 字节**，保存/加载恢复一致；CUDA 张量峰值分配 **1,380,057,600 字节**。
+
+全局搜索与生产代码 AST 导入检查确认：无旧包运行时导入、上游路径注入或初始化要求。剩余 `tomato`/Submodule 字符串仅为来源、历史记录或阻止旧依赖的测试；README/AutoDL 已改为普通 clone。所有机器报告、数值基准和旧 Checkpoint 均留在被 Git 忽略的 `outputs/integration_validation/`，未加入版本库。
+
+另从待提交 Git 树导出独立源码副本，不含 `.git`、`.gitmodules`、上游目录、`.venv` 或预训练权重。使用现有解释器的隔离模式，阻止外部包导入并核对模块实际文件位置，**全部 30 个模块导入通过**；六个 CLI（数据检查、模型检查、训练、评估、原型库构建、权重下载）的 `--help` **全部通过**。此检查仅验证源码独立性，没有运行这些正式任务。
+
+本次未连接 AutoDL、未处理 SpeechFake-BD 真实数据、未运行正式训练或完整 Dev/Test、未下载模型权重。FS-LPRF 源码已可随普通 clone 独立获得；运行时仍按部署文档准备环境、官方权重和实验所需资源。

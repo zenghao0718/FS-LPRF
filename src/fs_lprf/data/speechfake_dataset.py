@@ -4,11 +4,8 @@ import copy
 import csv
 import os
 import torch
-from fs_lprf.upstream import enable_upstream
-
-enable_upstream()
-from tomato.data.fad_trim import GeneralFAD
-from tomato.data.audio_augmentation import RawBoostAudioAugmentation
+from .audio import GeneralFAD
+from .augmentation import RawBoostAudioAugmentation
 
 
 class ConfiguredRawBoost(RawBoostAudioAugmentation):
@@ -60,7 +57,7 @@ class SpeechFakeDataset(GeneralFAD):
             raise ValueError("Set data.data_path to the directory containing the six manifests")
         options["data_path"] = str(Path(options["data_path"]).resolve())
         validate_manifest(options["data_path"], split)
-        # Initialize official GeneralFAD without constructing its hard-coded RIR augmentor.
+        # Attach the configured RIR augmentor after initializing the waveform dataset.
         options["do_augment"] = False
         super().__init__(Namespace(**options), split, train_mode=train_mode)
         self.do_augment = train_mode and data_config["do_augment"]

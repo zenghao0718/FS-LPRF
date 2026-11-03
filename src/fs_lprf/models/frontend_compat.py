@@ -1,6 +1,6 @@
-"""Compatibility confined to the official w2v2 module's checkpoint I/O.
+"""Verified official Fairseq checkpoint I/O for the integrated XLS-R model.
 
-No upstream files, weights, network structure or hidden-state extraction are changed.
+The original file, tensors, network structure and hidden-state order are preserved.
 """
 import hashlib
 import logging
@@ -8,7 +8,7 @@ from pathlib import Path
 import pickle
 from argparse import Namespace
 import torch
-from fs_lprf.upstream import enable_upstream, XLSR_URL as OFFICIAL_URL, XLSR_SHA256 as OFFICIAL_SHA256
+from fs_lprf.provenance import XLSR_URL as OFFICIAL_URL, XLSR_SHA256 as OFFICIAL_SHA256
 LOAD_REPORT = {}
 
 # The raw 2021 snapshot predates these fields. Fairseq's own loader merges the
@@ -49,7 +49,7 @@ def load_official_checkpoint(path):
         payload = torch.load(path, map_location="cpu", weights_only=False)
         LOAD_REPORT.update(unsafe_fallback=True, sha256=digest)
     # Original Fairseq training snapshots store cfg.model and model. The pinned
-    # Layer-Wise loader expects the same objects as cfg and state_dict.
+    # Integrated XLS-R loader expects the same objects as cfg and state_dict.
     if "state_dict" not in payload and "model" in payload:
         cfg = payload["cfg"]
         model_cfg = cfg["model"] if isinstance(cfg, dict) else cfg.model
@@ -62,21 +62,3 @@ def load_official_checkpoint(path):
         LOAD_REPORT["schema_adapter"] = "cfg.model -> cfg; model -> state_dict (unchanged tensors)"
         LOAD_REPORT["fairseq_legacy_defaults"] = missing
     return payload
-
-
-class _FrontendTorch:
-    """A module-local torch facade; never monkeypatch torch.load globally."""
-    def __getattr__(self, name):
-        return getattr(torch, name)
-
-    @staticmethod
-    def load(path, *args, **kwargs):
-        if args or kwargs:
-            raise ValueError("Unexpected upstream checkpoint-loading arguments")
-        return load_official_checkpoint(path)
-
-
-def install_frontend_compatibility():
-    enable_upstream()
-    from tomato.models.frontend_models import w2v2
-    w2v2.torch = _FrontendTorch()

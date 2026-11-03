@@ -6,12 +6,11 @@
 
 ```bash
 cd /root/autodl-tmp
-git clone --recurse-submodules https://github.com/zenghao0718/FS-LPRF.git
+git clone https://github.com/zenghao0718/FS-LPRF.git
 cd FS-LPRF
-git submodule update --init --recursive
-git -C third_party/tomatoDD rev-parse HEAD
-# 必须为 88efe1376dfc5f5b9b62d016d33a7381c158d8af
 ```
+
+运行所需的 Layer-Wise/XLS-R 源码已整合到 `src/fs_lprf/`，无需初始化任何子模块或另外安装 `tomato`/Fairseq。已有旧版工作目录时，建议保留其数据、权重和运行输出，在新目录普通 clone 后复用资源，避免覆盖旧实验。
 
 ## 2. 环境部署
 
@@ -67,7 +66,6 @@ python -m pip install \
 ```bash
 python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
 python -m pip check
-python -m pytest -q
 ```
 
 ## 3. 权重与 RIR 资源
@@ -77,7 +75,18 @@ mkdir -p /root/autodl-tmp/pretrained
 python scripts/download_frontend.py --output /root/autodl-tmp/pretrained/xlsr2_300m.pt
 ```
 
-该官方原始 Fairseq 文件为 3,808,868,242 字节；下载器生成 `.source.json` 记录 SHA-256。保留 `.pt` 原始格式，不替换为 Hugging Face 权重。
+该官方原始 Fairseq 文件为 3,808,868,242 字节；下载器生成 `.source.json` 记录 SHA-256。已有完整且哈希正确的文件会直接复用，不重复下载。保留 `.pt` 原始格式，不替换为 Hugging Face 权重；整合后的模型仍直接加载该文件并严格核对参数名称。
+
+环境与权重就绪后，先运行不依赖真实数据集或 RIR 的单元测试和真实前端 Smoke Test：
+
+```bash
+python -m pytest -q
+python scripts/check_model.py --config configs/speechfake.yaml \
+  --set model.frontend_path=/root/autodl-tmp/pretrained/xlsr2_300m.pt \
+  --report /root/autodl-tmp/fs_lprf_runs/autodl_model_smoke.json
+```
+
+Smoke Test 只使用一条合成 4 秒 WAV，检查 25 组 Hidden States、Attention `[1,25,1024]`、投影 `[1,25,256]`、前端冻结、364800 个可训练参数的梯度及后端 Checkpoint 往返，不执行优化器更新。通过后再准备 RIR 和真实数据，后续正式实验由用户在 AutoDL 执行。
 
 RIR 资源由用户准备；若尚未准备，可在 AutoDL 下载 OpenSLR 28：
 
@@ -121,11 +130,9 @@ PY
 
 ```bash
 python scripts/check_data.py --config configs/speechfake.autodl.yaml
-python scripts/check_model.py --config configs/speechfake.autodl.yaml \
-  --report /root/autodl-tmp/fs_lprf_runs/autodl_model_smoke.json
 ```
 
-数据检查核对所有路径、类别与容量，并保存固定 Dev/Test Manifest。训练启动前会再次验证 Dev Manifest；已存在时直接复用，清单或配置变化会明确报错。Smoke Test 只检查一条临时 WAV 的真实模型链路。
+数据准备完成后才执行本节检查，核对所有路径、类别与容量，并保存固定 Dev/Test Manifest。训练启动前会再次验证 Dev Manifest；已存在时直接复用，清单或配置变化会明确报错。第 3 节的 Smoke Test 应已通过；若又更换前端权重路径或运行环境，应使用最终配置重新执行 Smoke Test。
 
 ## 6. 正式训练与恢复
 

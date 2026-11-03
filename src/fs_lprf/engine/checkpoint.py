@@ -6,7 +6,7 @@ from pathlib import Path
 import re
 import tempfile
 import torch
-from fs_lprf.upstream import UPSTREAM_COMMIT
+from fs_lprf.provenance import UPSTREAM_COMMIT
 from fs_lprf.utils.seed import capture_rng, restore_rng
 
 

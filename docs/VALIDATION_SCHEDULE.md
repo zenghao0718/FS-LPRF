@@ -1,6 +1,6 @@
 # 训练验证调度重构 v1.0
 
-本轮依据 `FS-LPRF_Codex_Training_Validation_Refactor_v1.0.md` 修改训练调度、报告和恢复。XLS-R 冻结、官方 Submodule、25 组表示、Attention/Bottleneck、Episode、原型/α/Loss、AdamW 与训练预算均保持原有设置。不执行真实训练、Dev/Test 或原型库构建。
+本轮依据 `FS-LPRF_Codex_Training_Validation_Refactor_v1.0.md` 修改训练调度、报告和恢复。XLS-R 冻结、固定来源的前端实现、25 组表示、Attention/Bottleneck、Episode、原型/α/Loss、AdamW 与训练预算均保持原有设置。不执行真实训练、Dev/Test 或原型库构建。2026-11-03 已将必要前端与音频代码整合进项目并移除 Submodule，本文描述的调度及 Checkpoint 协议不变，验证记录见 [LOCAL_VALIDATION.md](LOCAL_VALIDATION.md)。
 
 ## 调度与配置
 

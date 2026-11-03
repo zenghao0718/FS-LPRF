@@ -7,7 +7,7 @@ from fs_lprf.methods.inference import PrototypeBank
 from fs_lprf.methods.prototypes import class_dispersion
 from fs_lprf.utils.seed import preserved_rng, seed_all
 from fs_lprf.data.evaluation_manifest import dataset_fingerprint
-from fs_lprf.upstream import UPSTREAM_COMMIT
+from fs_lprf.provenance import UPSTREAM_COMMIT
 
 REAL_QUOTAS = {"AISHELL-1": 205, "AISHELL-3": 205, "CommonVoice": 205, "LibriTTS": 205, "VCTK": 204}
 
