@@ -15,23 +15,26 @@ Layer-Wise：[XIAOYixuan/tomatoDD](https://github.com/XIAOYixuan/tomatoDD)，分
 
 ## 环境
 
-先检查 `conda env list`。优先复用已有兼容环境，不向 `base` 安装项目依赖。本地实际使用 Miniforge Python 3.11 创建项目内独立 venv；也可创建 Conda 环境：
+优先使用项目已经验证的 **Python 3.11**。`requirements.txt` 固定 `torch==2.7.1` 和 `torchaudio==2.7.1`，其他依赖保持原有版本。CUDA Wheel 由实际 GPU 驱动、GPU 架构及部署环境决定，不在依赖文件中固定 `+cu126` 或 `+cu128`，也不需要额外安装 `torchvision`。**修改 `requirements.txt` 不等于强制所有 GPU 使用相同的 CUDA 构建**；已安装且兼容的 `2.7.1+cu126`、`2.7.1+cu128` 等构建均满足 `==2.7.1` 约束。
+
+AutoDL 是专门用于训练的实例，默认直接使用预装的 `base` 环境，不要求新建 Conda 或 venv。部署前必须按 [docs/AUTODL.md](docs/AUTODL.md) 检查预装 Python、torch、torchaudio 和 CUDA/驱动兼容性。已有环境符合要求时直接复用，不重复下载 PyTorch；只有缺失、版本或 CUDA 构建不兼容时，才按该文档选择官方 CUDA Wheel 安装或替换对应组件。
+
+确认 PyTorch/torchaudio 符合要求后，使用国内镜像补齐其他依赖，不添加 `--upgrade` 或 `--force-reinstall`：
 
 ```bash
-conda create -n fs-lprf python=3.11 -y
-conda activate fs-lprf
-python -m pip install torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+python -m pip check
+python -m pytest -q
 ```
 
-本机 PowerShell 可直接使用项目环境，无需修改系统 Python：
+本机继续使用已有的项目 `.venv`，无需创建新环境或修改系统 Python。当前 Python 3.11.18、torch/torchaudio `2.7.1+cu128`、CUDA runtime 12.8 已满足要求，保留现有构建，不重复下载安装。PowerShell 验证命令：
 
 ```powershell
+& .\.venv\Scripts\python.exe -m pip check
 & .\.venv\Scripts\python.exe -m pytest -q
-& .\.venv\Scripts\python.exe scripts/check_model.py --config configs/speechfake.yaml
 ```
 
-`requirements.txt` 不包含 torch/torchaudio，避免覆盖已匹配 CUDA 的版本。AutoDL 环境选择和全部命令见 [docs/AUTODL.md](docs/AUTODL.md)。
+历史本地验收记录见 [docs/LOCAL_VALIDATION.md](docs/LOCAL_VALIDATION.md)；AutoDL 环境检查、条件安装和正式运行命令见 [docs/AUTODL.md](docs/AUTODL.md)。
 
 ## XLS-R 权重
 

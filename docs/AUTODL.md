@@ -15,30 +15,54 @@ git -C third_party/tomatoDD rev-parse HEAD
 
 ## 2. 环境部署
 
-先检查当前环境与驱动：
+AutoDL 是专门用于训练的实例，**默认直接使用预装的 `base` 环境，不要求新建 Conda 或 venv**。优先选择项目已经验证的 **Python 3.11** 镜像；若当前激活了其他环境，先通过下列命令确认，再切回预装 `base`。部署前必须检查预装 Python、torch、torchaudio、GPU 驱动和 CUDA 兼容性，先检查再决定是否安装：
 
 ```bash
 nvidia-smi
 conda env list
+which python
 python --version
-python -c "import torch,torchaudio; print(torch.__version__,torchaudio.__version__,torch.version.cuda); print(torch.cuda.is_available()); print(torch.cuda.get_device_name(0))"
+python -m pip --version
+python -m pip show torch torchaudio
+python - <<'PY'
+import sys
+print('Python:', sys.version)
+assert sys.version_info >= (3, 11), '项目要求 Python >=3.11，优先使用已验证的 3.11'
+import torch
+import torchaudio
+print('torch:', torch.__version__)
+print('torchaudio:', torchaudio.__version__)
+print('PyTorch CUDA runtime:', torch.version.cuda)
+print('CUDA available:', torch.cuda.is_available())
+assert torch.__version__.split('+', 1)[0] == '2.7.1', '需要 torch 2.7.1'
+assert torchaudio.__version__.split('+', 1)[0] == '2.7.1', '需要 torchaudio 2.7.1'
+assert torch.__version__.partition('+')[2] == torchaudio.__version__.partition('+')[2], 'torch/torchaudio 需要匹配的 CUDA 构建'
+assert torch.version.cuda is not None and torch.cuda.is_available(), '需要可用的 CUDA 构建及兼容驱动'
+print('GPU:', torch.cuda.get_device_name(0))
+print('GPU capability:', torch.cuda.get_device_capability(0))
+print('CUDA tensor check:', torch.ones(1, device='cuda').sum().item())
+PY
 ```
 
-已有 Python 3.11、兼容 CUDA 的 PyTorch/torchaudio 时直接复用。缺少合适环境时：
+导入失败、版本断言失败或 CUDA 张量检查失败时，先定位缺失或不兼容的组件。Python 不符合项目要求时，优先改用预装 Python 3.11 的 AutoDL 镜像及其 `base`，无需新建环境。
+
+`requirements.txt` 固定的是 `torch==2.7.1`、`torchaudio==2.7.1`，不固定 `+cu126` 或 `+cu128`。`2.7.1+cu126`、`2.7.1+cu128` 等兼容 CUDA 构建都满足该版本约束。**修改 `requirements.txt` 不等于强制所有 GPU 使用相同的 CUDA 构建**；本机的 `+cu128` 组合无需照搬到 AutoDL。本项目不需要额外安装 `torchvision`。
+
+环境检查通过时，**直接复用预装 PyTorch/torchaudio，跳过下面的 Wheel 安装命令，不重复下载**，直接进入其余依赖安装。
+
+仅当 torch/torchaudio 缺失、版本不是 2.7.1、二者构建不匹配，或现有 CPU/CUDA 构建不兼容时，才安装或替换这两个组件。依据实际 GPU 驱动、GPU 架构和部署环境，从 [PyTorch 官方 2.7.1 历史版本说明](https://pytorch.org/get-started/previous-versions/#v271) 中选择兼容的 `cu118`、`cu126` 或 `cu128` Wheel。以下 `cu126` **仅为已确认驱动与 GPU 兼容后的示例**，不能无条件照抄：
 
 ```bash
-conda create -n fs-lprf python=3.11 -y --override-channels \
-  -c https://mirrors.tuna.tsinghua.edu.cn/anaconda/cloud/conda-forge
-conda activate fs-lprf
+# 仅在需要安装/替换时执行；按实际兼容性选择 cu118、cu126 或 cu128。
+TORCH_CUDA_WHEEL=cu126
+python -m pip install \
+  "torch==2.7.1+${TORCH_CUDA_WHEEL}" "torchaudio==2.7.1+${TORCH_CUDA_WHEEL}" \
+  --index-url "https://download.pytorch.org/whl/${TORCH_CUDA_WHEEL}"
 ```
 
-仅当该环境没有兼容 PyTorch 时，按 AutoDL 驱动选择对应版本；例如兼容 CUDA 12.6 的 A100 环境可安装：
+这里仅在条件安装命令中指定所选构建，确保同为 2.7.1 的 CPU 或其他不兼容构建也会被替换；`requirements.txt` 仍只固定公开版本号。替换范围为 torch、torchaudio 及它们所需的配套 CUDA 运行库，由 pip 解析；其他项目依赖继续按原有固定版本安装。安装后重新执行上面的环境检查，确认版本、导入和 CUDA 张量计算均通过。
 
-```bash
-python -m pip install torch==2.7.1 torchaudio==2.7.1 --index-url https://download.pytorch.org/whl/cu126
-```
-
-本机 CUDA 12.8 组合无需照搬到 AutoDL。PyTorch 官方历史版本命令见 [PyTorch Previous Versions](https://pytorch.org/get-started/previous-versions/)。随后安装其余依赖并检查：
+随后优先使用国内镜像补齐其他依赖，并验证。不要添加 `--upgrade` 或 `--force-reinstall`；已满足版本约束的 PyTorch/torchaudio 会被复用，保留现有 CUDA 构建：
 
 ```bash
 python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple

@@ -1,4 +1,9 @@
-# Install matching torch/torchaudio separately; do not replace the CUDA build.
+# PyTorch and torchaudio are pinned to 2.7.1.
+# Select CUDA wheels for the actual GPU driver and deployment environment.
+# Do not pin +cu126 or +cu128 here; reuse an installed compatible CUDA build.
+# This project does not require torchvision; do not install it for this project.
+torch==2.7.1
+torchaudio==2.7.1
 numpy==1.26.4
 librosa==0.10.2.post1
 soundfile==0.13.1
