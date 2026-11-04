@@ -25,7 +25,7 @@ train:
   support_per_class: 5
   total_query_per_episode: 15
   episodes_per_step: 8
-  audio_microbatch_size: 8
+  audio_microbatch_size: 32
   total_steps: 4000
   optimizer: AdamW
   learning_rate: 0.0001

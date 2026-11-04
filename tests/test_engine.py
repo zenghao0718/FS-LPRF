@@ -1,5 +1,6 @@
 from argparse import Namespace
 import copy
+import math
 from pathlib import Path
 from unittest.mock import Mock
 import random
@@ -45,11 +46,25 @@ class SyntheticBackend(torch.nn.Module):
         return {"feats": self.projection(source["feats"].squeeze(1)).reshape(-1, 25, 7)}
 
 
-def test_engine_one_backward_one_update_microbatches_and_independent_episodes(config, monkeypatch):
+def _microbatch_sizes(total_audio, microbatch):
+    """Match DataLoader slicing, including a shorter final batch."""
+    full, remainder = divmod(total_audio, microbatch)
+    sizes = [microbatch] * full
+    if remainder:
+        sizes.append(remainder)
+    if len(sizes) != math.ceil(total_audio / microbatch) or sum(sizes) != total_audio:
+        raise AssertionError("Microbatch split does not cover every audio record")
+    return sizes
+
+
+@pytest.mark.parametrize("microbatch", [8, 16, 32, 48, 64])
+def test_engine_one_backward_one_update_microbatches_and_independent_episodes(config, monkeypatch, microbatch):
     seed_all(42)
     dataset, model = SyntheticDataset(), SyntheticBackend()
     episodes = EpisodeSampler(dataset.pools).sample_step()
-    optimizer, scheduler = make_optimizer(model, config)
+    cfg = copy.deepcopy(config)
+    cfg["train"]["audio_microbatch_size"] = microbatch
+    optimizer, scheduler = make_optimizer(model, cfg)
     step_spy = Mock(wraps=optimizer.step)
     monkeypatch.setattr(optimizer, "step", step_spy)
     original_backward = torch.Tensor.backward
@@ -62,9 +77,11 @@ def test_engine_one_backward_one_update_microbatches_and_independent_episodes(co
     with torch.no_grad():
         expected_prototypes = [model.projection(dataset.features[list(episode.support_indices)].squeeze(1))
                                .view(3, 5, 25, 7).mean(1) for episode in episodes]
-    loss, norm, diagnostics = optimize_step(model, dataset, episodes, config, optimizer, 1)
+    loss, norm, diagnostics = optimize_step(model, dataset, episodes, cfg, optimizer, 1)
+    total_audio = sum(len(episode.indices) for episode in episodes)
+    expected_sizes = _microbatch_sizes(total_audio, cfg["train"]["audio_microbatch_size"])
     assert len(calls) == 1 and step_spy.call_count == 1
-    assert len(model.seen_batch_sizes) == 30 and set(model.seen_batch_sizes) == {8}
+    assert model.seen_batch_sizes == expected_sizes
     assert len(diagnostics) == 8 and np.isfinite(loss) and np.isfinite(norm)
     assert not torch.equal(before, model.projection.weight)
     assert not torch.equal(diagnostics[0]["alpha"], diagnostics[1]["alpha"])
