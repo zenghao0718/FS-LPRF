@@ -7,6 +7,7 @@ RIR implementation based on ESPNet2. See docs/CODE_PROVENANCE.md.
 """
 from argparse import Namespace
 import copy
+from pathlib import Path
 import numpy as np
 import torch
 from scipy import signal
@@ -112,14 +113,26 @@ class RawBoostAudioAugmentation:
     def load_rir_noise(self):
         raise NotImplementedError("Provide a configured RIR resource root")
 
-    def _get_all_noise_paths(self, path):
-        noises = []
-        #print(f"loading noises from {path}")
-        # recursively search for files that endswith .wav
-        for noise in path.rglob("*.wav"):
-            noises.append(noise)
-        #print(f"loaded {len(noises)} noises")
-        return noises
+    def _get_all_rir_paths(self, path):
+        """Read only RIR WAV files from OpenSLR 28 rir_list directories."""
+        root = Path(path)
+        if not root.exists():
+            raise FileNotFoundError(f"RIR resource root does not exist: {root}")
+        if not root.is_dir():
+            raise NotADirectoryError(f"RIR resource root is not a directory: {root}")
+        excluded = {"noise_list", "pointsource_noises"}
+        rirs = set()
+        for rir_dir in root.rglob("rir_list"):
+            if not rir_dir.is_dir() or excluded.intersection(rir_dir.relative_to(root).parts):
+                continue
+            for rir in rir_dir.rglob("*"):
+                if (rir.is_file() and rir.suffix.lower() == ".wav" and
+                        not excluded.intersection(rir.relative_to(root).parts)):
+                    rirs.add(rir)
+        if not rirs:
+            raise ValueError(f"No RIR WAV files found in rir_list directories under {root}; "
+                             "set data.rir_root to the OpenSLR 28 RIRS_NOISES root")
+        return sorted(rirs)
 
     def convolve_rir(self, audio):
         rir_path = np.random.choice(self.rir)

@@ -97,7 +97,9 @@ wget -c https://openslr.magicdatatech.com/resources/28/rirs_noises.zip \
 unzip /root/autodl-tmp/resources/rirs_noises.zip -d /root/autodl-tmp/resources
 ```
 
-上述地址是 [OpenSLR 28 页面列出的中国镜像](https://www.openslr.org/28/)。`data.rir_root` 指向解压后的 `RIRS_NOISES` 根目录，保持官方递归 WAV 搜索与增强逻辑。
+上述地址是 [OpenSLR 28 页面列出的中国镜像](https://www.openslr.org/28/)。`data.rir_root` 指向解压后的 `RIRS_NOISES` 根目录，例如 `/root/autodl-tmp/resources/RIRS_NOISES`。程序只从名为 `rir_list` 的子目录递归收集 WAV 文件，同时支持 `simulated_rirs/rir_list/` 与 `real_rirs_isotropic_noises/rir_list/`；所有 `noise_list` 和 `pointsource_noises` 均被排除。候选列表经过排序，根目录不存在或没有合格 RIR 时会明确报错，不回退到整个资源目录的 WAV。
+
+RIR 概率仍为 1/3，`noise_prob=1/5` 仍指 RawBoost Algorithm 5 的触发概率，同时触发时先 RIR 后 RawBoost；不会混入 OpenSLR 28 的普通环境噪声。RIR 卷积、功率归一化和 RawBoost 参数保持原有实现。
 
 ## 4. 数据路径与配置
 

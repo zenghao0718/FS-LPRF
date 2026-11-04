@@ -128,9 +128,9 @@ def test_manifest_rejects_header_duplicates_unknown_label(dataset, tmp_path):
         validate_manifest(tmp_path, "dev")
 
 
-def test_rir_and_rawboost_official_probabilities_order_and_arguments(tmp_path, wav, monkeypatch):
-    augmentor = ConfiguredRawBoost(tmp_path)
-    assert wav in augmentor.rir
+def test_rir_and_rawboost_official_probabilities_order_and_arguments(rir_root, monkeypatch):
+    augmentor = ConfiguredRawBoost(rir_root)
+    assert augmentor.rir == [rir_root / "simulated_rirs/rir_list/synthetic_rir.wav"]
     assert augmentor.rir_prob == 1 / 3 and augmentor.noise_prob == 1 / 5
     assert augmentor.rawboost_args.algo == 5
     events = []
@@ -148,8 +148,8 @@ def test_rir_and_rawboost_official_probabilities_order_and_arguments(tmp_path, w
     assert events == ["rir", "rawboost"]
 
 
-def test_real_rir_convolution_is_reused(dataset, tmp_path, wav):
-    augmentor = ConfiguredRawBoost(tmp_path)
+def test_real_rir_convolution_is_reused(dataset, rir_root):
+    augmentor = ConfiguredRawBoost(rir_root)
     audio = dataset[0]["feats"]
     augmentor.audio_power = float((audio**2).mean())
     result, _ = augmentor.convolve_rir(audio)
@@ -157,8 +157,8 @@ def test_real_rir_convolution_is_reused(dataset, tmp_path, wav):
     assert float((result**2).mean()) == pytest.approx(augmentor.audio_power, rel=1e-4)
 
 
-def test_official_rawboost_algorithm5_runs_with_pinned_numpy(dataset, tmp_path, monkeypatch):
-    augmentor = ConfiguredRawBoost(tmp_path)
+def test_official_rawboost_algorithm5_runs_with_pinned_numpy(dataset, rir_root, monkeypatch):
+    augmentor = ConfiguredRawBoost(rir_root)
     original = np.random.rand
     first_draws = iter([1.0, 0.0])  # Only force the two gate draws; keep the algorithm unchanged.
     def gates(*shape):
@@ -173,8 +173,8 @@ def test_official_rawboost_algorithm5_runs_with_pinned_numpy(dataset, tmp_path, 
     assert torch.isfinite(result).all()
 
 
-def test_train_adapter_uses_configured_official_augmentation_only_on_train(dataset, config, tmp_path, monkeypatch):
-    options = dict(config["data"], data_path=str(tmp_path), rir_root=str(tmp_path))
+def test_train_adapter_uses_configured_official_augmentation_only_on_train(dataset, config, tmp_path, rir_root, monkeypatch):
+    options = dict(config["data"], data_path=str(tmp_path), rir_root=str(rir_root))
     training = SpeechFakeDataset(options, "train", train_mode=True)
     assert training.do_augment and isinstance(training.augmentor, ConfiguredRawBoost)
     monkeypatch.setattr(np.random, "rand", lambda: 1.0)

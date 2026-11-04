@@ -7,7 +7,7 @@
 项目已将实际使用的 Layer-Wise 代码整合到自身功能模块，**普通 `git clone` 即可获得全部项目源码，无需 Git Submodule 或外部 `tomato` 包**。代码来源为 [XIAOYixuan/tomatoDD](https://github.com/XIAOYixuan/tomatoDD) 的 `interspeech25-layer-wise` 分支、固定 commit `88efe1376dfc5f5b9b62d016d33a7381c158d8af`；模型与实验协议保持不变。
 
 - `src/fs_lprf/data/audio.py`：保留 GeneralFAD/FADTrim 实际使用的读取、16 kHz 重采样、第一声道、首尾静音裁剪、−20 dB RMS、重复补足和随机 4 秒裁剪。
-- `src/fs_lprf/data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 资源路径仍由项目配置指定。
+- `src/fs_lprf/data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 资源路径由项目配置指定，只从 `rir_list` 子目录读取 RIR。`noise_prob=1/5` 表示 RawBoost Algorithm 5 的触发概率，不使用 OpenSLR 28 的普通环境噪声文件。
 - `src/fs_lprf/models/xlsr.py`、`xlsr_layers.py`、`xlsr_attention.py`：官方 Fairseq XLS-R-300M 的卷积、Transformer、自注意力及必要基础组件，直接加载原始官方权重并保留全部参数名称。未整合 Whisper、HuBERT、AASIST、FACodec 或其他无关模型。
 - `src/fs_lprf/models/fs_lprf_model.py`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention 与共享 `Linear(1024,256)`；仍只有 364800 个可训练参数，训练 Checkpoint 仍排除冻结前端。
 - `src/fs_lprf/utils/metrics.py`：整合官方 DET/EER，保留稳定排序、阈值和数值约定。
@@ -76,7 +76,7 @@ python scripts/check_data.py --config configs/speechfake.yaml \
   --set model.frontend_path=/root/autodl-tmp/pretrained/xlsr2_300m.pt
 ```
 
-也支持 `FS_LPRF_RIR_ROOT` 环境变量。RIR 使用 OpenSLR 28 原始资源。读取异常会报告具体 ID/路径，不随机换成其他类别的样本。
+也支持 `FS_LPRF_RIR_ROOT` 环境变量。`data.rir_root` 指向 OpenSLR 28 的 `RIRS_NOISES` 根目录，例如 `/root/autodl-tmp/resources/RIRS_NOISES`；程序只从 `simulated_rirs/rir_list/` 和 `real_rirs_isotropic_noises/rir_list/` 等名为 `rir_list` 的子目录递归读取 WAV 文件，排除所有 `noise_list`、`pointsource_noises`，并排序候选列表。根目录不存在或没有 RIR 时会明确报错，不回退到普通噪声文件。读取异常会报告具体 ID/路径，不随机换成其他类别的样本。
 
 ## 模型与训练协议
 

@@ -21,6 +21,17 @@ def wav(tmp_path):
 
 
 @pytest.fixture
+def rir_root(tmp_path):
+    root = tmp_path / "RIRS_NOISES"
+    rir_dir = root / "simulated_rirs" / "rir_list"
+    rir_dir.mkdir(parents=True)
+    impulse = np.zeros(1600, dtype=np.float32)
+    impulse[0], impulse[320] = 1.0, 0.2
+    sf.write(rir_dir / "synthetic_rir.wav", impulse, 16000, subtype="FLOAT")
+    return root
+
+
+@pytest.fixture
 def dataset(tmp_path, wav, config):
     from fs_lprf.data.speechfake_dataset import SpeechFakeDataset
     names = ["real"] + [f"TTS__generator{i:02d}" for i in range(32)]

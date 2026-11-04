@@ -9,15 +9,13 @@ from .augmentation import RawBoostAudioAugmentation
 
 
 class ConfiguredRawBoost(RawBoostAudioAugmentation):
-    """Only the official hard-coded RIR resource path is overridden."""
+    """Use RIR-only candidates from the configured OpenSLR 28 root."""
     def __init__(self, rir_root):
         self.rir_root = Path(rir_root).resolve()
         super().__init__()
 
     def load_rir_noise(self):
-        self.rir = self._get_all_noise_paths(self.rir_root)
-        if not self.rir:
-            raise ValueError(f"No RIR WAV files in {self.rir_root}")
+        self.rir = self._get_all_rir_paths(self.rir_root)
 
 
 def validate_manifest(data_path, split):
