@@ -7,7 +7,7 @@ from unittest.mock import Mock
 import pytest
 import torch
 
-from fs_lprf.engine.checkpoint import (checkpoint_sha256, load_checkpoint,
+from engine.checkpoint import (checkpoint_sha256, load_checkpoint,
                                       resolve_checkpoint, save_checkpoint)
 
 

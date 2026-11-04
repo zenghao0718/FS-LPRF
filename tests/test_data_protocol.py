@@ -5,12 +5,12 @@ import numpy as np
 import pytest
 import soundfile as sf
 import torch
-from fs_lprf.data.speechfake_dataset import SpeechFakeDataset, ConfiguredRawBoost, validate_manifest
-from fs_lprf.data.episode_sampler import EpisodeSampler
-from fs_lprf.data.evaluation_manifest import load_or_create_manifest
-from fs_lprf.data.loaders import audio_loader
-from fs_lprf.utils.seed import seed_all, capture_rng, preserved_rng
-from fs_lprf.methods.prototype_bank import select_bank_samples, REAL_QUOTAS
+from data.speechfake_dataset import SpeechFakeDataset, ConfiguredRawBoost, validate_manifest
+from data.episode_sampler import EpisodeSampler
+from data.evaluation_manifest import load_or_create_manifest
+from data.loaders import audio_loader
+from utils.seed import seed_all, capture_rng, preserved_rng
+from methods.prototype_bank import select_bank_samples, REAL_QUOTAS
 
 
 def test_episode_sampling_is_independent_balanced_and_disjoint(dataset):

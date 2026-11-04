@@ -2,11 +2,11 @@ import numpy as np
 import pytest
 import torch
 import torch.nn.functional as F
-from fs_lprf.methods.prototypes import build_prototypes, cosine_logits, class_dispersion
-from fs_lprf.methods.reliability import support_reliability, reliability_from_statistics
-from fs_lprf.methods.loss import episode_loss, step_loss
-from fs_lprf.methods.inference import kshot_task, kshot_scores, predict, bank_from_features, zeroshot_scores, PrototypeBank
-from fs_lprf.utils.metrics import binary_metrics, macro_metrics, mean_std
+from methods.prototypes import build_prototypes, cosine_logits, class_dispersion
+from methods.reliability import support_reliability, reliability_from_statistics
+from methods.loss import episode_loss, step_loss
+from methods.inference import kshot_task, kshot_scores, predict, bank_from_features, zeroshot_scores, PrototypeBank
+from utils.metrics import binary_metrics, macro_metrics, mean_std
 
 
 def task(seed, dim=7):

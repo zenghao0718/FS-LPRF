@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import DataLoader
-from fs_lprf.utils.seed import seed_worker
+from utils.seed import seed_worker
 
 
 def audio_loader(dataset, indices, batch_size, seed, num_workers=0):

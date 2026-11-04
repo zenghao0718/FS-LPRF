@@ -8,7 +8,7 @@ from pathlib import Path
 import pickle
 from argparse import Namespace
 import torch
-from fs_lprf.provenance import XLSR_URL as OFFICIAL_URL, XLSR_SHA256 as OFFICIAL_SHA256
+from utils.provenance import XLSR_URL as OFFICIAL_URL, XLSR_SHA256 as OFFICIAL_SHA256
 LOAD_REPORT = {}
 
 # The raw 2021 snapshot predates these fields. Fairseq's own loader merges the

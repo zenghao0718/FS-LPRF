@@ -1,6 +1,6 @@
 import _bootstrap
-from fs_lprf.config import common_parser, load_config
-from fs_lprf.engine.trainer import train
+from utils.config import common_parser, load_config
+from engine.trainer import train
 
 
 def main():

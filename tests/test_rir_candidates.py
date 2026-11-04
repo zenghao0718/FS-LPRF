@@ -1,7 +1,7 @@
 """OpenSLR 28 RIR candidates must come from its four text indexes."""
 import pytest
 
-from fs_lprf.data.speechfake_dataset import ConfiguredRawBoost
+from data.speechfake_dataset import ConfiguredRawBoost
 
 INDEX_FILES = (
     "simulated_rirs/smallroom/rir_list",

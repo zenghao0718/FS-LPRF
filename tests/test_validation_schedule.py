@@ -9,11 +9,11 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 import torch
-from fs_lprf.engine import trainer
-from fs_lprf.engine.checkpoint import load_checkpoint, resolve_checkpoint
-from fs_lprf.engine.validation_schedule import (ValidationHistory, check_new_run,
+from engine import trainer
+from engine.checkpoint import load_checkpoint, resolve_checkpoint
+from engine.validation_schedule import (ValidationHistory, check_new_run,
     make_run_identity, milestone_steps, validation_mode)
-from fs_lprf.utils.seed import seed_all, capture_rng
+from utils.seed import seed_all, capture_rng
 
 
 class CounterModel(torch.nn.Module):
@@ -216,9 +216,9 @@ def test_preflight_manifests_alone_do_not_prevent_new_training(tmp_path):
 
 def test_real_report_result_can_commit_and_rebuild_history(dataset, tmp_path, config):
     from test_evaluation import FeatureDataset, FeatureModel
-    from fs_lprf.data.evaluation_manifest import load_or_create_manifest
-    from fs_lprf.engine.evaluator import evaluate
-    from fs_lprf.engine.checkpoint import save_checkpoint
+    from data.evaluation_manifest import load_or_create_manifest
+    from engine.evaluator import evaluate
+    from engine.checkpoint import save_checkpoint
     cfg, history, _, _, _ = harness(tmp_path / "run", config)
     history.initialize()
     ds, model = FeatureDataset(dataset), FeatureModel()
@@ -239,7 +239,7 @@ def test_real_report_result_can_commit_and_rebuild_history(dataset, tmp_path, co
 
 
 def test_logging_writes_each_step_to_terminal_and_file(tmp_path, capsys):
-    from fs_lprf.utils.logging import configure_logging
+    from utils.logging import configure_logging
     logger = configure_logging(tmp_path)
     try:
         logger.info("step=%d loss=%.6f lr=%.8g gradient_norm=%.6f", 1, .2, 1e-6, .5)

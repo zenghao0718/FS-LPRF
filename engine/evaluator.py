@@ -4,11 +4,11 @@ from tempfile import TemporaryDirectory
 import time
 import numpy as np
 import torch
-from fs_lprf.data.loaders import audio_loader
-from fs_lprf.methods.inference import kshot_task, kshot_scores, predict
-from fs_lprf.utils.metrics import binary_metrics, macro_metrics, mean_std, METRICS
-from fs_lprf.utils.logging import write_csv
-from fs_lprf.utils.seed import seed_all, preserved_rng
+from data.loaders import audio_loader
+from methods.inference import kshot_task, kshot_scores, predict
+from utils.metrics import binary_metrics, macro_metrics, mean_std, METRICS
+from utils.logging import write_csv
+from utils.seed import seed_all, preserved_rng
 
 
 def feature_batches(model, dataset, ids, cfg, seed):

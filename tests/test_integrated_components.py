@@ -12,15 +12,15 @@ import pytest
 import soundfile as sf
 import torch
 
-from fs_lprf.data.audio import get_audio
-from fs_lprf.models.fs_lprf_model import FSLPRF
-from fs_lprf.models.xlsr import Wav2Vec2Model
-from fs_lprf.models import frontend_compat
-from fs_lprf.utils.metrics import compute_eer
+from data.audio import get_audio
+from models.fs_lprf_model import FSLPRF
+from models.xlsr import Wav2Vec2Model
+from models import frontend_compat
+from utils.metrics import compute_eer
 
 
 def test_all_modules_import_without_external_checkout(tmp_path):
-    source = Path(__file__).resolve().parents[1] / "src"
+    source = Path(__file__).resolve().parents[1]
     program = """
 import importlib.abc
 import pkgutil
@@ -29,14 +29,18 @@ import sys
 
 class BlockExternal(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split('.')[0] in {'tomato', 'fairseq'}:
+        if fullname.split('.')[0] in {'tomato', 'fairseq', 'fs_lprf'}:
             raise AssertionError('Unexpected external import: ' + fullname)
 
 sys.meta_path.insert(0, BlockExternal())
 sys.path.insert(0, sys.argv[1])
-import fs_lprf
-for module in pkgutil.walk_packages(fs_lprf.__path__, fs_lprf.__name__ + '.'):
-    __import__(module.name)
+root = Path(sys.argv[1]).resolve()
+for name in ('data', 'models', 'methods', 'engine', 'utils'):
+    package = __import__(name)
+    assert Path(package.__file__).resolve().is_relative_to(root)
+    for module in pkgutil.walk_packages(package.__path__, package.__name__ + '.'):
+        imported = __import__(module.name, fromlist=['_'])
+        assert Path(imported.__file__).resolve().is_relative_to(root)
 assert not any('third_party' in path for path in sys.path)
 print('All FS-LPRF modules imported independently')
 """

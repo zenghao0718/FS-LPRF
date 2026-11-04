@@ -2,12 +2,12 @@ from collections import defaultdict
 from pathlib import Path
 import random
 import torch
-from fs_lprf.engine.evaluator import extract_features
-from fs_lprf.methods.inference import PrototypeBank
-from fs_lprf.methods.prototypes import class_dispersion
-from fs_lprf.utils.seed import preserved_rng, seed_all
-from fs_lprf.data.evaluation_manifest import dataset_fingerprint
-from fs_lprf.provenance import UPSTREAM_COMMIT
+from engine.evaluator import extract_features
+from methods.inference import PrototypeBank
+from methods.prototypes import class_dispersion
+from utils.seed import preserved_rng, seed_all
+from data.evaluation_manifest import dataset_fingerprint
+from utils.provenance import UPSTREAM_COMMIT
 
 REAL_QUOTAS = {"AISHELL-1": 256, "AISHELL-3": 256, "LibriTTS": 256, "VCTK": 256}
 
@@ -51,7 +51,7 @@ def build_prototype_bank(model, dataset, cfg, seed, checkpoint):
                 dispersions.append(class_dispersion(features.float(), labels, prototype)[0])
     finally:
         model.train(was_training)
-    from fs_lprf.models.frontend_compat import sha256_file
+    from models.frontend_compat import sha256_file
     metadata = dict(version=1, method_version="2.4", upstream_commit=UPSTREAM_COMMIT,
                     checkpoint=str(Path(checkpoint).resolve()), checkpoint_sha256=sha256_file(checkpoint),
                     dataset_fingerprint=dataset_fingerprint(dataset), seed=seed, samples_per_class=1024,

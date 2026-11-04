@@ -6,7 +6,9 @@ __pycache__/
 build/
 dist/
 /pretrained/
-/data/
+# Track the flat data code module while ignoring local datasets stored beside it.
+/data/*
+!/data/*.py
 /datasets/
 /rir/
 /RIRS_NOISES/

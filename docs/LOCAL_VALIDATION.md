@@ -2,7 +2,7 @@
 
 日期：2026-11-02。范围：合成向量、临时 WAV、真实官方 XLS-R 前端的小批量验证。未下载 SpeechFake-BD、未运行正式训练或完整 Dev/Test、未构建真实 0-shot 原型库。本记录不是实验结果。
 
-本文保留历史验收事实；2026-11-03 移除 Submodule 后的工程整合与验证记录见末尾。早期关于上游目录和 Submodule 的描述仅代表当时结构。
+本文保留历史验收事实；工程整合及平级布局重构的验证记录见各日期小节。文中源码文件位置按当前布局更新，早期关于上游目录和 Submodule 的描述仅代表当时结构，历史结果和日期保持原样。
 
 ## 最终环境
 
@@ -135,3 +135,24 @@ Smoke 入口曾发现 CUDA 显存统计在设备初始化前调用的问题，�
 另从待提交 Git 树导出独立源码副本，不含 `.git`、`.gitmodules`、上游目录、`.venv` 或预训练权重。使用现有解释器的隔离模式，阻止外部包导入并核对模块实际文件位置，**全部 30 个模块导入通过**；六个 CLI（数据检查、模型检查、训练、评估、原型库构建、权重下载）的 `--help` **全部通过**。此检查仅验证源码独立性，没有运行这些正式任务。
 
 本次未连接 AutoDL、未处理 SpeechFake-BD 真实数据、未运行正式训练或完整 Dev/Test、未下载模型权重。FS-LPRF 源码已可随普通 clone 独立获得；运行时仍按部署文档准备环境、官方权重和实验所需资源。
+
+## 2026-11-04：平级科研代码布局重构
+
+将 30 个原功能目录文件按原文件名迁至根目录的 `data/`、`models/`、`methods/`、`engine/`、`utils/`，其中配置与来源模块归入 `utils/`。旧顶层包的版本元数据保留在 `utils/__init__.py`。完整迁移前后目录树与清单见 [PROJECT_LAYOUT.md](PROJECT_LAYOUT.md)。没有删除功能实现、合并算法模块或引入第三方依赖。
+
+Bootstrap 现在定位项目根目录；pytest 使用根目录 Python 路径。项目名称、版本、描述与 Python 版本约束保留，移除旧构建和 setuptools 包发现配置。资源、依赖、实验 YAML 和测试数值 fixture 未变化；`data/` 仅放行 Python 源码，其余本地数据与子目录继续被 Git 忽略。
+
+沿用已有项目 `.venv`，验收结果：
+
+- 重构前 `python -m pytest -q`：**145 passed、0 failed、0 skipped，48.40 秒**。
+- 重构后同一命令：**145 passed、0 failed、0 skipped，48.68 秒**。全部原有用例保留，没有 skip/xfail；78 条告警为既有 librosa、RawBoost 和 `weight_norm` 弃用提示。
+- `python -m pip check`：**No broken requirements found.**
+- 六个 CLI 的 `--help` 全部正常退出：`check_data.py`、`check_model.py`、`train.py`、`evaluate.py`、`download_frontend.py`、`build_prototype_bank.py`。子进程清除额外 Python 路径设置，直接从项目根目录执行。
+- 隔离进程阻止旧包导入，全部 15 个指定导入及 25 个平级子模块导入成功，实际文件均来自当前仓库，未依靠旧布局或已安装的旧包。
+- 迁移前后默认配置和五项 AutoDL 路径/worker 覆盖配置逐字段完全一致；`configs/speechfake.yaml` 原文件未修改。
+- 迁移前生成的合成后端 Checkpoint 与 PrototypeBank 在新布局加载成功，后端参数键/张量、原型库张量和元数据保持一致；完整套件继续覆盖 Optimizer/Scheduler、RNG、Best 索引与恢复协议。
+- 逐文件比较证明 29 个迁移文件除导入前缀外内容完全一致；工具包初始化文件仅补入原有版本元数据。模型、损失、音频处理、RIR 索引、四来源 Real 配额及训练/评估函数均未改动。
+
+旧源码目录迁移后仅剩生成字节码，经核对后清除；当前运行代码、测试和部署命令没有旧路径依赖。旧文件位置只在专门的迁移对照文档中保留。机器验收辅助文件及迁移前合成序列化文件位于被 Git 忽略的 `outputs/flat_layout_validation/`。
+
+本次未操作 AutoDL、未下载数据/模型/资源、未读取真实数据集、未运行真实 XLS-R Smoke 或正式训练。

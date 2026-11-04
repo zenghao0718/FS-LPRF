@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 import soundfile as sf
 import torch
-from fs_lprf.config import load_config
+from utils.config import load_config
 
 
 @pytest.fixture
@@ -42,7 +42,7 @@ def rir_root(tmp_path):
 
 @pytest.fixture
 def dataset(tmp_path, wav, config):
-    from fs_lprf.data.speechfake_dataset import SpeechFakeDataset
+    from data.speechfake_dataset import SpeechFakeDataset
     names = ["real"] + [f"TTS__generator{i:02d}" for i in range(32)]
     for split in ("train", "dev", "test"):
         paths, infos = [], []

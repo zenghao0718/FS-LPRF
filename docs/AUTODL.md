@@ -10,7 +10,9 @@ git clone https://github.com/zenghao0718/FS-LPRF.git
 cd FS-LPRF
 ```
 
-运行所需的 Layer-Wise/XLS-R 源码已整合到 `src/fs_lprf/`，无需初始化任何子模块或另外安装 `tomato`/Fairseq。已有旧版工作目录时，建议保留其数据、权重和运行输出，在新目录普通 clone 后复用资源，避免覆盖旧实验。
+运行所需的 Layer-Wise/XLS-R 源码已整合到 `data/`、`models/`、`methods/`、`engine/` 和 `utils/`，无需初始化任何子模块或另外安装 `tomato`/Fairseq。已有旧版工作目录时，建议保留其数据、权重和运行输出，在新目录普通 clone 后复用资源，避免覆盖旧实验。
+
+后续命令均在上面的 `FS-LPRF` 项目根目录执行。依赖仍从 `requirements.txt` 安装；不需要可编辑安装本项目或手工配置 Python 路径。目录和模块说明见 [PROJECT_LAYOUT.md](PROJECT_LAYOUT.md)，既有数据、权重和运行输出路径不变。
 
 ## 2. 环境部署
 
@@ -111,7 +113,7 @@ unzip /root/autodl-tmp/resources/rirs_noises.zip -d /root/autodl-tmp/resources
 完整原始资源预期为 smallroom/mediumroom/largeroom 各 20,000 个模拟 RIR，加上 325 个真实 RIR，共 60,325 个；该数量用于资源核对，未写死在生产代码中。用户在 AutoDL 准备好现有资源后，可仅核对索引候选数量，不读写 Manifest：
 
 ```bash
-PYTHONPATH=src python -c "from fs_lprf.data.speechfake_dataset import ConfiguredRawBoost; print(len(ConfiguredRawBoost('/root/autodl-tmp/resources/RIRS_NOISES').rir))"
+python -c "from data.speechfake_dataset import ConfiguredRawBoost; print(len(ConfiguredRawBoost('/root/autodl-tmp/resources/RIRS_NOISES').rir))"
 ```
 
 RIR 概率仍为 1/3，`noise_prob=1/5` 仍指 RawBoost Algorithm 5 的触发概率，同时触发时先 RIR 后 RawBoost；不会混入 OpenSLR 28 的普通环境噪声。RIR 卷积、功率归一化和 RawBoost 参数保持原有实现。

@@ -5,14 +5,14 @@ import torch
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.tensorboard import SummaryWriter
-from fs_lprf.config import save_config
-from fs_lprf.data.speechfake_dataset import SpeechFakeDataset
-from fs_lprf.data.episode_sampler import EpisodeSampler
-from fs_lprf.data.evaluation_manifest import load_or_create_manifest, load_or_create_light_manifest, dataset_fingerprint
-from fs_lprf.data.loaders import audio_loader
-from fs_lprf.methods.loss import step_loss
-from fs_lprf.utils.seed import seed_all, preserved_rng
-from fs_lprf.utils.logging import configure_logging
+from utils.config import save_config
+from data.speechfake_dataset import SpeechFakeDataset
+from data.episode_sampler import EpisodeSampler
+from data.evaluation_manifest import load_or_create_manifest, load_or_create_light_manifest, dataset_fingerprint
+from data.loaders import audio_loader
+from methods.loss import step_loss
+from utils.seed import seed_all, preserved_rng
+from utils.logging import configure_logging
 from .checkpoint import load_checkpoint, save_checkpoint
 from .evaluator import evaluate
 from .validation_schedule import (ValidationHistory, check_new_run,
@@ -130,7 +130,7 @@ def run_steps(model, train_ds, dev_ds, sampler, cfg, optimizer, scheduler,
 
 
 def train(cfg, resume=None):
-    from fs_lprf.models.fs_lprf_model import FSLPRF
+    from models.fs_lprf_model import FSLPRF
     from .checkpoint import resolve_checkpoint
     from contextlib import ExitStack
     import uuid

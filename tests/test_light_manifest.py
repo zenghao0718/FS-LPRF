@@ -9,12 +9,12 @@ import numpy as np
 import pytest
 import torch
 
-from fs_lprf.config import SEEDS, load_config, validate_config
-from fs_lprf.data.evaluation_manifest import (
+from utils.config import SEEDS, load_config, validate_config
+from data.evaluation_manifest import (
     dataset_fingerprint, load_or_create_light_manifest, validate_episode_manifest,
     validate_light_manifest,
 )
-from fs_lprf.utils.seed import capture_rng, seed_all
+from utils.seed import capture_rng, seed_all
 
 
 @pytest.fixture

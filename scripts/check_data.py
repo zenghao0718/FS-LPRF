@@ -2,10 +2,10 @@ from collections import Counter
 from pathlib import Path
 import json
 import _bootstrap
-from fs_lprf.config import common_parser, load_config
-from fs_lprf.data.speechfake_dataset import SpeechFakeDataset, ConfiguredRawBoost
-from fs_lprf.data.episode_sampler import EpisodeSampler
-from fs_lprf.data.evaluation_manifest import load_or_create_manifest
+from utils.config import common_parser, load_config
+from data.speechfake_dataset import SpeechFakeDataset, ConfiguredRawBoost
+from data.episode_sampler import EpisodeSampler
+from data.evaluation_manifest import load_or_create_manifest
 
 
 def main():

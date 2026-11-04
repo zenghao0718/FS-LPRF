@@ -6,13 +6,13 @@ import random
 import numpy as np
 import pytest
 import torch
-from fs_lprf.config import load_config
-from fs_lprf.data.episode_sampler import EpisodeSampler
-from fs_lprf.engine.trainer import make_optimizer, optimize_step
-from fs_lprf.engine.checkpoint import save_checkpoint, load_checkpoint
-from fs_lprf.models.frontend_compat import load_official_checkpoint
-from fs_lprf.utils.seed import seed_all
-from fs_lprf.provenance import UPSTREAM_COMMIT
+from utils.config import load_config
+from data.episode_sampler import EpisodeSampler
+from engine.trainer import make_optimizer, optimize_step
+from engine.checkpoint import save_checkpoint, load_checkpoint
+from models.frontend_compat import load_official_checkpoint
+from utils.seed import seed_all
+from utils.provenance import UPSTREAM_COMMIT
 
 
 class SyntheticDataset(torch.utils.data.Dataset):
@@ -128,11 +128,11 @@ def test_protocol_configuration_rejects_unrequested_architecture_changes(config,
 
 
 def test_integrated_imports_and_historical_source_revision():
-    from fs_lprf.data.audio import GeneralFAD
-    from fs_lprf.data.speechfake_dataset import SpeechFakeDataset
-    from fs_lprf.utils.metrics import compute_eer
-    from fs_lprf.models.fs_lprf_model import FSLPRF
+    from data.audio import GeneralFAD
+    from data.speechfake_dataset import SpeechFakeDataset
+    from utils.metrics import compute_eer
+    from models.fs_lprf_model import FSLPRF
     assert issubclass(FSLPRF, torch.nn.Module)
     assert issubclass(SpeechFakeDataset, GeneralFAD)
-    assert compute_eer.__module__ == "fs_lprf.utils.metrics"
+    assert compute_eer.__module__ == "utils.metrics"
     assert UPSTREAM_COMMIT == "88efe1376dfc5f5b9b62d016d33a7381c158d8af"

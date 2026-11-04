@@ -8,15 +8,15 @@ import numpy as np
 import soundfile as sf
 import torch
 import _bootstrap
-from fs_lprf.config import common_parser, load_config
-from fs_lprf.provenance import UPSTREAM_COMMIT
-from fs_lprf.utils.seed import seed_all
-from fs_lprf.models.fs_lprf_model import FSLPRF
-from fs_lprf.models.frontend_compat import LOAD_REPORT
-from fs_lprf.engine.trainer import make_optimizer
-from fs_lprf.engine.checkpoint import save_checkpoint, load_checkpoint
+from utils.config import common_parser, load_config
+from utils.provenance import UPSTREAM_COMMIT
+from utils.seed import seed_all
+from models.fs_lprf_model import FSLPRF
+from models.frontend_compat import LOAD_REPORT
+from engine.trainer import make_optimizer
+from engine.checkpoint import save_checkpoint, load_checkpoint
 
-from fs_lprf.data.audio import FADTrim
+from data.audio import FADTrim
 
 
 class SmokeAudio(FADTrim):

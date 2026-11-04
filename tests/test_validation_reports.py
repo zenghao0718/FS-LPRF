@@ -4,10 +4,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 import torch
-from fs_lprf.data.evaluation_manifest import load_or_create_manifest
-from fs_lprf.engine.evaluator import evaluate
-from fs_lprf.utils.metrics import METRICS
-from fs_lprf.utils.seed import capture_rng, seed_all
+from data.evaluation_manifest import load_or_create_manifest
+from engine.evaluator import evaluate
+from utils.metrics import METRICS
+from utils.seed import capture_rng, seed_all
 from test_evaluation import FeatureDataset, FeatureModel
 
 
@@ -107,7 +107,7 @@ def test_full_dev_reports_all_classes_population_std_logs_and_file_isolation(dat
 
 
 def test_light_dev_unequal_queries_use_all_classes_and_equal_class_macro(dataset, config, tmp_path, monkeypatch):
-    from fs_lprf.engine import evaluator
+    from engine import evaluator
     ds = FeatureDataset(dataset)
     model = FeatureModel().train()
     _, light = manifests(ds, tmp_path)
@@ -134,7 +134,7 @@ def test_light_dev_unequal_queries_use_all_classes_and_equal_class_macro(dataset
 
 
 def test_failed_full_dev_restores_rng_and_mode_and_does_not_commit_partial_csv(dataset, config, tmp_path, monkeypatch):
-    from fs_lprf.engine import evaluator
+    from engine import evaluator
     ds = FeatureDataset(dataset)
     model = FeatureModel().train()
     full, _ = manifests(ds, tmp_path)

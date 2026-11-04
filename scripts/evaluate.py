@@ -1,12 +1,12 @@
 from pathlib import Path
 import json
 import _bootstrap
-from fs_lprf.config import common_parser, load_config
-from fs_lprf.data.speechfake_dataset import SpeechFakeDataset
-from fs_lprf.data.evaluation_manifest import load_or_create_manifest
-from fs_lprf.models.fs_lprf_model import FSLPRF
-from fs_lprf.engine.checkpoint import load_checkpoint, resolve_checkpoint
-from fs_lprf.engine.evaluator import evaluate
+from utils.config import common_parser, load_config
+from data.speechfake_dataset import SpeechFakeDataset
+from data.evaluation_manifest import load_or_create_manifest
+from models.fs_lprf_model import FSLPRF
+from engine.checkpoint import load_checkpoint, resolve_checkpoint
+from engine.evaluator import evaluate
 
 
 def main():

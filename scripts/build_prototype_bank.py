@@ -1,10 +1,10 @@
 from pathlib import Path
 import _bootstrap
-from fs_lprf.config import common_parser, load_config
-from fs_lprf.data.speechfake_dataset import SpeechFakeDataset
-from fs_lprf.models.fs_lprf_model import FSLPRF
-from fs_lprf.engine.checkpoint import load_checkpoint
-from fs_lprf.methods.prototype_bank import build_prototype_bank
+from utils.config import common_parser, load_config
+from data.speechfake_dataset import SpeechFakeDataset
+from models.fs_lprf_model import FSLPRF
+from engine.checkpoint import load_checkpoint
+from methods.prototype_bank import build_prototype_bank
 
 
 def main():

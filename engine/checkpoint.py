@@ -6,8 +6,8 @@ from pathlib import Path
 import re
 import tempfile
 import torch
-from fs_lprf.provenance import UPSTREAM_COMMIT
-from fs_lprf.utils.seed import capture_rng, restore_rng
+from utils.provenance import UPSTREAM_COMMIT
+from utils.seed import capture_rng, restore_rng
 
 
 def save_checkpoint(path, model, optimizer, scheduler, config, step,

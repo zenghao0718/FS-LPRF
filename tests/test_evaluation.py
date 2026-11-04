@@ -4,10 +4,10 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 import torch
-from fs_lprf.data.evaluation_manifest import load_or_create_manifest
-from fs_lprf.engine.evaluator import evaluate
-from fs_lprf.methods.prototype_bank import select_bank_samples, REAL_QUOTAS
-from fs_lprf.utils.seed import seed_all, capture_rng
+from data.evaluation_manifest import load_or_create_manifest
+from engine.evaluator import evaluate
+from methods.prototype_bank import select_bank_samples, REAL_QUOTAS
+from utils.seed import seed_all, capture_rng
 
 
 class FeatureDataset(torch.utils.data.Dataset):

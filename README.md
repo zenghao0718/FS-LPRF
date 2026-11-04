@@ -2,17 +2,23 @@
 
 依据 `FS-LPRF_Method_Design_v2.4.md` 与 `FS-LPRF_Phase1_Codex_Implementation_Spec_v1.3.md` 实施。第一阶段仅包含 SpeechFake-BD：3-way episodic training、五种子 Dev 选模与 Test 10-shot。正式训练、Dev/Test 和真实原型库构建由用户在 AutoDL 执行；本地仅做合成数据单元测试与真实 XLS-R 小批量 Smoke Test。
 
+## 项目布局与运行入口
+
+核心模块采用平级科研代码布局：`data/`、`models/`、`methods/`、`engine/`、`utils/` 直接位于项目根目录，与 `configs/`、`scripts/`、`tests/` 和 `docs/` 平级。配置加载与来源信息分别位于 `utils/config.py`、`utils/provenance.py`。完整迁移前后目录树及逐文件清单见 [docs/PROJECT_LAYOUT.md](docs/PROJECT_LAYOUT.md)。
+
+以下命令均从克隆后的项目根目录执行。安装 `requirements.txt` 中的依赖后即可直接运行脚本，不需要可编辑安装本项目或手动设置 Python 路径；脚本会自动定位项目根目录。`data/` 是源码目录，数据资源仍通过 `data.data_path` 和 `data.rir_root` 指定；其中的本地非 Python 数据及子目录继续被 Git 忽略。
+
 ## 整合的官方代码与独立源码
 
 项目已将实际使用的 Layer-Wise 代码整合到自身功能模块，**普通 `git clone` 即可获得全部项目源码，无需 Git Submodule 或外部 `tomato` 包**。代码来源为 [XIAOYixuan/tomatoDD](https://github.com/XIAOYixuan/tomatoDD) 的 `interspeech25-layer-wise` 分支、固定 commit `88efe1376dfc5f5b9b62d016d33a7381c158d8af`；模型与实验协议保持不变。
 
-- `src/fs_lprf/data/audio.py`：保留 GeneralFAD/FADTrim 实际使用的读取、16 kHz 重采样、第一声道、首尾静音裁剪、−20 dB RMS、重复补足和随机 4 秒裁剪。
-- `src/fs_lprf/data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 候选严格来自 OpenSLR 28 的四份 `rir_list` 文本索引。`noise_prob=1/5` 表示 RawBoost Algorithm 5 的触发概率，不使用 OpenSLR 28 的普通环境噪声文件。
-- `src/fs_lprf/models/xlsr.py`、`xlsr_layers.py`、`xlsr_attention.py`：官方 Fairseq XLS-R-300M 的卷积、Transformer、自注意力及必要基础组件，直接加载原始官方权重并保留全部参数名称。未整合 Whisper、HuBERT、AASIST、FACodec 或其他无关模型。
-- `src/fs_lprf/models/fs_lprf_model.py`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention 与共享 `Linear(1024,256)`；仍只有 364800 个可训练参数，训练 Checkpoint 仍排除冻结前端。
-- `src/fs_lprf/utils/metrics.py`：整合官方 DET/EER，保留稳定排序、阈值和数值约定。
+- `data/audio.py`：保留 GeneralFAD/FADTrim 实际使用的读取、16 kHz 重采样、第一声道、首尾静音裁剪、−20 dB RMS、重复补足和随机 4 秒裁剪。
+- `data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 候选严格来自 OpenSLR 28 的四份 `rir_list` 文本索引。`noise_prob=1/5` 表示 RawBoost Algorithm 5 的触发概率，不使用 OpenSLR 28 的普通环境噪声文件。
+- `models/xlsr.py`、`xlsr_layers.py`、`xlsr_attention.py`：官方 Fairseq XLS-R-300M 的卷积、Transformer、自注意力及必要基础组件，直接加载原始官方权重并保留全部参数名称。未整合 Whisper、HuBERT、AASIST、FACodec 或其他无关模型。
+- `models/fs_lprf_model.py`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention 与共享 `Linear(1024,256)`；仍只有 364800 个可训练参数，训练 Checkpoint 仍排除冻结前端。
+- `utils/metrics.py`：整合官方 DET/EER，保留稳定排序、阈值和数值约定。
 
-来源、作者、逐文件映射和已有许可声明见 [docs/CODE_PROVENANCE.md](docs/CODE_PROVENANCE.md)。`src/fs_lprf/provenance.py` 仅保存来源 commit 与官方权重信息；既有 Checkpoint/原型库中的 `upstream_commit` 字段及其值保持不变，兼容原有恢复与 Best 索引。
+来源、作者、逐文件映射和已有许可声明见 [docs/CODE_PROVENANCE.md](docs/CODE_PROVENANCE.md)。`utils/provenance.py` 仅保存来源 commit 与官方权重信息；既有 Checkpoint/原型库中的 `upstream_commit` 字段及其值保持不变，兼容原有恢复与 Best 索引。
 
 ## 环境
 
