@@ -97,13 +97,30 @@ wget -c https://openslr.magicdatatech.com/resources/28/rirs_noises.zip \
 unzip /root/autodl-tmp/resources/rirs_noises.zip -d /root/autodl-tmp/resources
 ```
 
-上述地址是 [OpenSLR 28 页面列出的中国镜像](https://www.openslr.org/28/)。`data.rir_root` 指向解压后的 `RIRS_NOISES` 根目录，例如 `/root/autodl-tmp/resources/RIRS_NOISES`。程序只从名为 `rir_list` 的子目录递归收集 WAV 文件，同时支持 `simulated_rirs/rir_list/` 与 `real_rirs_isotropic_noises/rir_list/`；所有 `noise_list` 和 `pointsource_noises` 均被排除。候选列表经过排序，根目录不存在或没有合格 RIR 时会明确报错，不回退到整个资源目录的 WAV。
+上述地址是 [OpenSLR 28 页面列出的中国镜像](https://www.openslr.org/28/)。`data.rir_root` 指向解压后的 `RIRS_NOISES` 根目录，例如 `/root/autodl-tmp/resources/RIRS_NOISES`。`rir_list` 是普通文本索引文件，程序必须读取以下四份索引：
+
+- `simulated_rirs/smallroom/rir_list`
+- `simulated_rirs/mediumroom/rir_list`
+- `simulated_rirs/largeroom/rir_list`
+- `real_rirs_isotropic_noises/rir_list`
+
+索引记录支持 [Kaldi 的 RIR 元数据字段](https://github.com/kaldi-asr/kaldi/blob/master/egs/wsj/s5/steps/data/reverberate_data_dir.py)，例如 `--rir-id=example --room-id=Room001 RIRS_NOISES/simulated_rirs/smallroom/Room001/a.wav`。路径可以是 `RIRS_NOISES/` 前缀路径、相对资源根目录的 `simulated_rirs/...` 或 `real_rirs_isotropic_noises/...`、相对索引文件目录的路径，或根目录以内的绝对路径；带空格的路径使用引号。
+
+仅索引中列出的实际 WAV 文件进入候选池，解析后验证根目录边界、去重并排序。任一索引缺失/为空，或记录指向缺失文件、非 WAV、越界路径时均明确报错；坏记录包含索引路径与行号，不返回部分候选池。未索引的真实目录噪声及 `pointsource_noises` 不会纳入，也不会递归扫描 WAV 来补全索引。
+
+完整原始资源预期为 smallroom/mediumroom/largeroom 各 20,000 个模拟 RIR，加上 325 个真实 RIR，共 60,325 个；该数量用于资源核对，未写死在生产代码中。用户在 AutoDL 准备好现有资源后，可仅核对索引候选数量，不读写 Manifest：
+
+```bash
+PYTHONPATH=src python -c "from fs_lprf.data.speechfake_dataset import ConfiguredRawBoost; print(len(ConfiguredRawBoost('/root/autodl-tmp/resources/RIRS_NOISES').rir))"
+```
 
 RIR 概率仍为 1/3，`noise_prob=1/5` 仍指 RawBoost Algorithm 5 的触发概率，同时触发时先 RIR 后 RawBoost；不会混入 OpenSLR 28 的普通环境噪声。RIR 卷积、功率归一化和 RawBoost 参数保持原有实现。
 
 ## 4. 数据路径与配置
 
 用户完成 SpeechFake-BD 清理后，将无表头的 `train.tsv/train.txt/dev.tsv/dev.txt/test.tsv/test.txt` 放在例如 `/root/autodl-tmp/speechfake/manifests`。TSV 为 `uttid<TAB>audio_absolute_path`；TXT 为 `uttid<TAB>origin_ds<TAB>speaker<TAB>attacker<TAB>label`，详细约定见 README。三个 split 不得交叉使用同一音频。
+
+BD baseline 的 Real 仍是一个类别，来源为 AISHELL-1、AISHELL-3、LibriTTS、VCTK；不需要为 Prototype Bank 加入 CommonVoice。后续仅从未增强的 Train 构建原型库时，四个来源各抽取 256 条，Real 合计 1024 条；32 个 Fake 类各自仍为 1024 条，不放回抽样，容量不足直接报错。
 
 生成一份独立的 AutoDL 配置，保留已固定的模型与实验参数：
 

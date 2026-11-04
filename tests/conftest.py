@@ -23,11 +23,20 @@ def wav(tmp_path):
 @pytest.fixture
 def rir_root(tmp_path):
     root = tmp_path / "RIRS_NOISES"
-    rir_dir = root / "simulated_rirs" / "rir_list"
-    rir_dir.mkdir(parents=True)
     impulse = np.zeros(1600, dtype=np.float32)
     impulse[0], impulse[320] = 1.0, 0.2
-    sf.write(rir_dir / "synthetic_rir.wav", impulse, 16000, subtype="FLOAT")
+    for directory, filename in (
+        ("simulated_rirs/smallroom", "Room001/a.wav"),
+        ("simulated_rirs/mediumroom", "Room001/c.wav"),
+        ("simulated_rirs/largeroom", "Room001/d.wav"),
+        ("real_rirs_isotropic_noises", "real.wav"),
+    ):
+        path = root / directory / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        sf.write(path, impulse, 16000, subtype="FLOAT")
+        (root / directory / "rir_list").write_text(
+            f"--rir-id={directory.replace('/', '_')} --room-id=Room001 RIRS_NOISES/{directory}/{filename}\n",
+            encoding="utf-8")
     return root
 
 

@@ -9,7 +9,7 @@ from fs_lprf.utils.seed import preserved_rng, seed_all
 from fs_lprf.data.evaluation_manifest import dataset_fingerprint
 from fs_lprf.provenance import UPSTREAM_COMMIT
 
-REAL_QUOTAS = {"AISHELL-1": 205, "AISHELL-3": 205, "CommonVoice": 205, "LibriTTS": 205, "VCTK": 204}
+REAL_QUOTAS = {"AISHELL-1": 256, "AISHELL-3": 256, "LibriTTS": 256, "VCTK": 256}
 
 
 def select_bank_samples(dataset, seed):

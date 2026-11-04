@@ -8,10 +8,62 @@ RIR implementation based on ESPNet2. See docs/CODE_PROVENANCE.md.
 from argparse import Namespace
 import copy
 from pathlib import Path
+import shlex
 import numpy as np
 import torch
 from scipy import signal
 from .audio import get_audio
+
+RIR_INDEX_FILES = (
+    "simulated_rirs/smallroom/rir_list",
+    "simulated_rirs/mediumroom/rir_list",
+    "simulated_rirs/largeroom/rir_list",
+    "real_rirs_isotropic_noises/rir_list",
+)
+
+
+def _rir_path_from_index(line, index, line_number, root):
+    """Parse Kaldi-style metadata plus one file path, without executing commands."""
+    location = f"{index}:{line_number}"
+    lexer = shlex.shlex(line, posix=True)
+    lexer.whitespace_split = True
+    lexer.escape = ""  # Preserve native Windows paths as well as POSIX paths.
+    try:
+        fields = iter(list(lexer))
+    except ValueError as error:
+        raise ValueError(f"{location}: malformed RIR index record: {error}") from error
+    paths = []
+    for field in fields:
+        if field.startswith("--"):
+            value = field.partition("=")[2] if "=" in field else next(fields, None)
+            if not value or value.startswith("--"):
+                raise ValueError(f"{location}: missing metadata value for {field}")
+        else:
+            paths.append(field)
+    if len(paths) != 1 or not paths[0].strip():
+        raise ValueError(f"{location}: expected exactly one RIR WAV path")
+    reference = Path(paths[0])
+    if not reference.parts:
+        raise ValueError(f"{location}: expected a WAV file path: {paths[0]}")
+    if reference.is_absolute():
+        rir = reference
+    elif reference.parts[0] in ("RIRS_NOISES", root.name):
+        rir = root.joinpath(*reference.parts[1:])
+    elif reference.parts[0] in ("simulated_rirs", "real_rirs_isotropic_noises", "pointsource_noises"):
+        rir = root / reference
+    else:
+        rir = index.parent / reference
+    rir = rir.resolve()
+    if not rir.is_relative_to(root):
+        raise ValueError(f"{location}: RIR path escapes resource root: {reference}")
+    if {"noise_list", "pointsource_noises"}.intersection(rir.relative_to(root).parts):
+        raise ValueError(f"{location}: ordinary-noise path is not a RIR: {reference}")
+    if rir.suffix.lower() != ".wav":
+        raise ValueError(f"{location}: expected a WAV file path: {reference}")
+    if not rir.is_file():
+        raise FileNotFoundError(f"{location}: indexed RIR WAV file is missing or not a file: {rir}")
+    return rir
+
 
 def randRange(x1, x2, integer):
     y = np.random.uniform(low=x1, high=x2, size=(1,))
@@ -114,24 +166,28 @@ class RawBoostAudioAugmentation:
         raise NotImplementedError("Provide a configured RIR resource root")
 
     def _get_all_rir_paths(self, path):
-        """Read only RIR WAV files from OpenSLR 28 rir_list directories."""
-        root = Path(path)
+        """Read all four OpenSLR 28 text indexes; never scan for WAV candidates."""
+        root = Path(path).resolve()
         if not root.exists():
             raise FileNotFoundError(f"RIR resource root does not exist: {root}")
         if not root.is_dir():
             raise NotADirectoryError(f"RIR resource root is not a directory: {root}")
-        excluded = {"noise_list", "pointsource_noises"}
         rirs = set()
-        for rir_dir in root.rglob("rir_list"):
-            if not rir_dir.is_dir() or excluded.intersection(rir_dir.relative_to(root).parts):
-                continue
-            for rir in rir_dir.rglob("*"):
-                if (rir.is_file() and rir.suffix.lower() == ".wav" and
-                        not excluded.intersection(rir.relative_to(root).parts)):
-                    rirs.add(rir)
-        if not rirs:
-            raise ValueError(f"No RIR WAV files found in rir_list directories under {root}; "
-                             "set data.rir_root to the OpenSLR 28 RIRS_NOISES root")
+        for relative_index in RIR_INDEX_FILES:
+            index = root / relative_index
+            if not index.resolve().is_relative_to(root):
+                raise ValueError(f"RIR index escapes resource root: {index}")
+            if not index.is_file():
+                raise FileNotFoundError(f"Required RIR index is missing or not a regular text file: {index}")
+            entries = 0
+            with index.open(encoding="utf-8-sig") as handle:
+                for line_number, line in enumerate(handle, 1):
+                    if not line.strip() or line.lstrip().startswith("#"):
+                        continue
+                    rirs.add(_rir_path_from_index(line, index, line_number, root))
+                    entries += 1
+            if not entries:
+                raise ValueError(f"No RIR WAV files: empty RIR index {index}")
         return sorted(rirs)
 
     def convolve_rir(self, audio):

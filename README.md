@@ -7,7 +7,7 @@
 项目已将实际使用的 Layer-Wise 代码整合到自身功能模块，**普通 `git clone` 即可获得全部项目源码，无需 Git Submodule 或外部 `tomato` 包**。代码来源为 [XIAOYixuan/tomatoDD](https://github.com/XIAOYixuan/tomatoDD) 的 `interspeech25-layer-wise` 分支、固定 commit `88efe1376dfc5f5b9b62d016d33a7381c158d8af`；模型与实验协议保持不变。
 
 - `src/fs_lprf/data/audio.py`：保留 GeneralFAD/FADTrim 实际使用的读取、16 kHz 重采样、第一声道、首尾静音裁剪、−20 dB RMS、重复补足和随机 4 秒裁剪。
-- `src/fs_lprf/data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 资源路径由项目配置指定，只从 `rir_list` 子目录读取 RIR。`noise_prob=1/5` 表示 RawBoost Algorithm 5 的触发概率，不使用 OpenSLR 28 的普通环境噪声文件。
+- `src/fs_lprf/data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 候选严格来自 OpenSLR 28 的四份 `rir_list` 文本索引。`noise_prob=1/5` 表示 RawBoost Algorithm 5 的触发概率，不使用 OpenSLR 28 的普通环境噪声文件。
 - `src/fs_lprf/models/xlsr.py`、`xlsr_layers.py`、`xlsr_attention.py`：官方 Fairseq XLS-R-300M 的卷积、Transformer、自注意力及必要基础组件，直接加载原始官方权重并保留全部参数名称。未整合 Whisper、HuBERT、AASIST、FACodec 或其他无关模型。
 - `src/fs_lprf/models/fs_lprf_model.py`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention 与共享 `Linear(1024,256)`；仍只有 364800 个可训练参数，训练 Checkpoint 仍排除冻结前端。
 - `src/fs_lprf/utils/metrics.py`：整合官方 DET/EER，保留稳定排序、阈值和数值约定。
@@ -65,7 +65,7 @@ uttid<TAB>audio_absolute_path
 uttid<TAB>origin_ds<TAB>speaker<TAB>attacker<TAB>label
 ```
 
-Real 使用 `attacker=real`、`label=bonafide`；Fake 使用 `label=spoof`，`attacker` 保留任务类型与模型的组合，例如 `TTS__ModelA`、`VC__ModelA`。各 split 必须包含相同的 32 个 Fake 类别和一个统一 Real 类；代码不合并同名模型。`origin_ds` 原样保留；将来构建原型库时 Real 来源应使用 `AISHELL-1`、`AISHELL-3`、`CommonVoice`、`LibriTTS`、`VCTK`。
+Real 使用 `attacker=real`、`label=bonafide`；Fake 使用 `label=spoof`，`attacker` 保留任务类型与模型的组合，例如 `TTS__ModelA`、`VC__ModelA`。各 split 必须包含相同的 32 个 Fake 类别和一个统一 Real 类；代码不合并同名模型。`origin_ds` 原样保留；当前 BD baseline 的 Real 来源为 `AISHELL-1`、`AISHELL-3`、`LibriTTS`、`VCTK`，四个来源共同组成一个 Real 类，CommonVoice 不属于本次主实验。
 
 编辑 `configs/speechfake.yaml` 的路径，或为每条命令使用 `--set section.key=value`：
 
@@ -76,7 +76,7 @@ python scripts/check_data.py --config configs/speechfake.yaml \
   --set model.frontend_path=/root/autodl-tmp/pretrained/xlsr2_300m.pt
 ```
 
-也支持 `FS_LPRF_RIR_ROOT` 环境变量。`data.rir_root` 指向 OpenSLR 28 的 `RIRS_NOISES` 根目录，例如 `/root/autodl-tmp/resources/RIRS_NOISES`；程序只从 `simulated_rirs/rir_list/` 和 `real_rirs_isotropic_noises/rir_list/` 等名为 `rir_list` 的子目录递归读取 WAV 文件，排除所有 `noise_list`、`pointsource_noises`，并排序候选列表。根目录不存在或没有 RIR 时会明确报错，不回退到普通噪声文件。读取异常会报告具体 ID/路径，不随机换成其他类别的样本。
+也支持 `FS_LPRF_RIR_ROOT` 环境变量。`data.rir_root` 指向 OpenSLR 28 的 `RIRS_NOISES` 根目录，例如 `/root/autodl-tmp/resources/RIRS_NOISES`；程序读取 `simulated_rirs/{smallroom,mediumroom,largeroom}/rir_list` 和 `real_rirs_isotropic_noises/rir_list` 共四份**文本索引文件**，仅使用其中列出的 WAV。支持 Kaldi `--rir-id`/`--room-id` 等字段、以 `RIRS_NOISES/` 开头的路径、资源根目录或索引所在目录的相对路径及绝对路径。解析后检查文件存在、WAV 扩展名及根目录边界，再去重排序；缺失/空索引或坏记录会明确报错，并在记录错误中指出索引及行号。未入索引的普通噪声不会纳入候选，禁止回退到递归扫描全部 WAV。完整原始资源预期为 60,000 个模拟 RIR 和 325 个真实 RIR，程序不写死候选数量；详情见 [docs/AUTODL.md](docs/AUTODL.md)。读取异常会报告具体 ID/路径，不随机换成其他类别的样本。
 
 ## 模型与训练协议
 
@@ -126,4 +126,4 @@ Pytest 使用合成向量和临时 WAV，包含梯度、损失聚合、一次更
 
 ## 0-shot 接口（本阶段仅合成测试）
 
-`methods.inference` 提供参数化 K-shot、33 类 PrototypeBank 与 0-shot 分数；0-shot 在每层取 32 个 Fake 原型的最大相似度，再减 Real 并使用统计 α 融合。`scripts/build_prototype_bank.py` 已实现训练集无增强构建，每类不放回 1024 条，Real 配额为 205/205/205/205/204，容量不足明确报错。它记录最终 Checkpoint、样本 ID、数据指纹和版本。本阶段不运行真实构建或 0-shot 实验，不包含其他数据集、基线或消融。
+`methods.inference` 提供参数化 K-shot、33 类 PrototypeBank 与 0-shot 分数；0-shot 在每层取 32 个 Fake 原型的最大相似度，再减 Real 并使用统计 α 融合。`scripts/build_prototype_bank.py` 已实现训练集无增强构建：Real 从 AISHELL-1、AISHELL-3、LibriTTS、VCTK 各不放回抽取 256 条，共 1024 条，仍作为一个 Real 类；32 个 Fake 类各不放回抽取 1024 条。无需 CommonVoice，任一来源或类别容量不足均明确报错，不重复使用音频补足配额。它记录最终 Checkpoint、样本 ID、数据指纹和版本。本阶段不运行真实构建或 0-shot 实验，不包含其他数据集、基线或消融。

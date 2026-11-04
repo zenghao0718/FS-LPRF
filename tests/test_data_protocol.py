@@ -130,7 +130,12 @@ def test_manifest_rejects_header_duplicates_unknown_label(dataset, tmp_path):
 
 def test_rir_and_rawboost_official_probabilities_order_and_arguments(rir_root, monkeypatch):
     augmentor = ConfiguredRawBoost(rir_root)
-    assert augmentor.rir == [rir_root / "simulated_rirs/rir_list/synthetic_rir.wav"]
+    assert augmentor.rir == sorted(rir_root / path for path in (
+        "simulated_rirs/smallroom/Room001/a.wav",
+        "simulated_rirs/mediumroom/Room001/c.wav",
+        "simulated_rirs/largeroom/Room001/d.wav",
+        "real_rirs_isotropic_noises/real.wav",
+    ))
     assert augmentor.rir_prob == 1 / 3 and augmentor.noise_prob == 1 / 5
     assert augmentor.rawboost_args.algo == 5
     events = []
