@@ -29,6 +29,8 @@ validation:
 
 每次验证保留原有 no-grad 评分路线、RNG 保存/恢复和模型训练模式恢复。实际 Query 数不等长时仍逐类等权 Macro，ACC 继续固定零阈值；CSV 为比例、日志为百分比，所有 Std 均用 ddof=0。
 
+缓存管线默认从独立 Light/Full、各 seed 的 XLS-R 25 层缓存继续执行 Attention/Bottleneck，Support/Query 规则与 Real 复用关系不变。训练前显式构建并校验缓存；Test 仅由最终 Best 后的评估入口处理。新的 Run Identity 绑定实际缓存内容、schema 与逐样本 RNG 版本，排除已验证不改变输入的 Worker/预取/pin memory 等性能项。新管线必须使用新输出目录，不能混用旧 Run 的中间状态。详见 [DATA_CACHE.md](DATA_CACHE.md)。
+
 完整 step 800 的独立报告位于 `evaluation/full/`：
 
 - `dev_full_per_class_seed_step0800.csv`：160 行，含 Step/seed/类别/实际 Query 数和 EER/threshold/AUC/AP/ACC。

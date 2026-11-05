@@ -8,7 +8,11 @@ from utils.config import load_config
 
 @pytest.fixture
 def config():
-    return load_config(Path(__file__).resolve().parents[1] / "configs" / "speechfake.yaml")
+    cfg = load_config(Path(__file__).resolve().parents[1] / "configs" / "speechfake.yaml")
+    # Existing unit tests exercise the uncached baseline without creating resources.
+    cfg["data"].update(train_cache_mode="none", dev_cache_mode="none", test_cache_mode="none")
+    cfg["runtime"].update(train_num_workers=0, eval_num_workers=0)
+    return cfg
 
 
 @pytest.fixture

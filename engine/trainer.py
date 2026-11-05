@@ -9,7 +9,10 @@ from utils.config import save_config
 from data.speechfake_dataset import SpeechFakeDataset
 from data.episode_sampler import EpisodeSampler
 from data.evaluation_manifest import load_or_create_manifest, load_or_create_light_manifest, dataset_fingerprint
-from data.loaders import audio_loader
+from data.loaders import ReusableAudioLoader
+from data.cache import atomic_json
+from data.cache_pipeline import open_train_dataset, bind_evaluation_caches, cache_bindings
+from models.fs_lprf_model import forward_batch
 from methods.loss import step_loss
 from utils.seed import seed_all, preserved_rng
 from utils.logging import configure_logging
@@ -35,14 +38,14 @@ def make_optimizer(model, cfg):
     return optimizer, LambdaLR(optimizer, factor)
 
 
-def optimize_step(model, dataset, episodes, cfg, optimizer, step):
+def optimize_step(model, dataset, episodes, cfg, optimizer, step, *, loader=None, timings=None):
     """One backward and one update after all independent episodes and microbatches."""
     model.train()
     optimizer.zero_grad(set_to_none=True)
     indices = [index for episode in episodes for index in episode.indices]
-    loader = audio_loader(dataset, indices, cfg["train"]["audio_microbatch_size"],
-                          cfg["train"]["seed"] + step, cfg["runtime"]["num_workers"])
-    features = torch.cat([model({"feats": batch["feats"]})["feats"] for batch in loader])
+    from contextlib import nullcontext
+    with nullcontext(loader) if loader is not None else ReusableAudioLoader(dataset, cfg) as step_loader:
+        features = torch.cat([forward_batch(model, batch) for batch in step_loader.for_step(indices, step)])
     offset, tasks = 0, []
     for episode in episodes:
         ns, nq = len(episode.support_indices), len(episode.query_indices)
@@ -54,10 +57,11 @@ def optimize_step(model, dataset, episodes, cfg, optimizer, step):
     loss, diagnostics = step_loss(tasks)
     if not torch.isfinite(loss):
         raise FloatingPointError(f"Non-finite Step loss at {step}")
-    loss.backward()
-    norm = torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad],
-                                         cfg["train"]["gradient_clip"], error_if_nonfinite=True)
-    optimizer.step()
+    with timings.measure("backward_optimizer_seconds") if timings else nullcontext():
+        loss.backward()
+        norm = torch.nn.utils.clip_grad_norm_([p for p in model.parameters() if p.requires_grad],
+                                             cfg["train"]["gradient_clip"], error_if_nonfinite=True)
+        optimizer.step()
     return float(loss.detach()), float(norm), diagnostics
 
 
@@ -85,7 +89,7 @@ def full_validation(model, dev_ds, manifest, cfg, history, step, writer, logger)
 
 def run_steps(model, train_ds, dev_ds, sampler, cfg, optimizer, scheduler,
               full_manifest, light_manifest, history, manifest_hash, train_fingerprint,
-              start, writer, logger, episode_log):
+              start, writer, logger, episode_log, *, loader=None):
     # A node is durable before validation. Recover validation first if its transaction
     # was interrupted; never skip that node's opportunity to become Best.
     if start:
@@ -104,7 +108,10 @@ def run_steps(model, train_ds, dev_ds, sampler, cfg, optimizer, scheduler,
                 support_ids=[train_ds.uttids[i] for i in episode.support_indices],
                 query_ids=[train_ds.uttids[i] for i in episode.query_indices])) + "\n")
         lr = optimizer.param_groups[0]["lr"]
-        loss, norm, _ = optimize_step(model, train_ds, episodes, cfg, optimizer, step)
+        if loader is None:
+            loss, norm, _ = optimize_step(model, train_ds, episodes, cfg, optimizer, step)
+        else:
+            loss, norm, _ = optimize_step(model, train_ds, episodes, cfg, optimizer, step, loader=loader)
         scheduler.step()
         writer.add_scalar("train/loss", loss, step)
         writer.add_scalar("train/learning_rate", lr, step)
@@ -139,7 +146,7 @@ def train(cfg, resume=None):
     if not resume:
         check_new_run(out)
     out.mkdir(parents=True, exist_ok=True)
-    train_ds = SpeechFakeDataset(cfg["data"], "train", train_mode=True)
+    train_ds = open_train_dataset(cfg)
     dev_ds = SpeechFakeDataset(cfg["data"], "dev")
     if train_ds.fake_classes != dev_ds.fake_classes:
         raise ValueError("Train/Dev attacker class mappings differ")
@@ -152,7 +159,9 @@ def train(cfg, resume=None):
                 cfg["validation"]["shot"], cfg["validation"]["light_seed"],
                 cfg["validation"]["light_max_query_per_class"])
     manifest_hash, train_fingerprint = file_sha256(manifest_path), dataset_fingerprint(train_ds)
-    identity = make_run_identity(cfg, manifest_hash, file_sha256(light_path), train_fingerprint)
+    bind_evaluation_caches(dev_ds, cfg, {"full": (manifest, manifest_path), "light": (light, light_path)})
+    bindings, cache_metadata = cache_bindings(train_ds, dev_ds)
+    identity = make_run_identity(cfg, manifest_hash, file_sha256(light_path), train_fingerprint, bindings)
     history = ValidationHistory(out, cfg, identity, manifest_hash, train_fingerprint)
     start, resume_path = 0, None
     if resume:
@@ -167,6 +176,9 @@ def train(cfg, resume=None):
     else:
         history.initialize()
         save_config(cfg, out / "config_resolved.yaml")
+        atomic_json(out / "cache_bindings.json", bindings)
+        for fingerprint, metadata in cache_metadata.items():
+            atomic_json(out / "cache_metadata" / f"{fingerprint}.json", metadata)
     logger = configure_logging(out)
     model = FSLPRF(cfg)
     optimizer, scheduler = make_optimizer(model, cfg)
@@ -185,6 +197,7 @@ def train(cfg, resume=None):
             writer = stack.enter_context(SummaryWriter(out / "tensorboard", flush_secs=10,
                                                        purge_step=start + 1 if resume else None))
         episode_log = stack.enter_context(episode_path.open("x", encoding="utf-8"))
+        loader = stack.enter_context(ReusableAudioLoader(train_ds, cfg))
         run_steps(model, train_ds, dev_ds, sampler, cfg, optimizer, scheduler,
                   manifest, light, history, manifest_hash, train_fingerprint,
-                  start, writer, logger, episode_log)
+                  start, writer, logger, episode_log, loader=loader)

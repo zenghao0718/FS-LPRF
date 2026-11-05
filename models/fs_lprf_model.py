@@ -56,6 +56,28 @@ class FSLPRF(nn.Module):
             post_features = rearrange(output["post_features"], "n t d -> t n d")
             return [post_features] + [layer[0] for layer in output["layer_results"]]
 
+    def extract_frontend_features(self, waveform, *, to_cpu=False):
+        """Complete pre-Attention states, [B,25,T,1024], with T from XLS-R."""
+        hiddens = self.extract_features({"feats": waveform})
+        if len(hiddens) != 25 or any(hidden.shape != hiddens[0].shape for hidden in hiddens):
+            raise ValueError("XLS-R must return post_features followed by all 24 transformer states")
+        if to_cpu:
+            time, batch, dim = hiddens[0].shape
+            result = torch.empty(batch, 25, time, dim, dtype=hiddens[0].dtype, device="cpu")
+            for layer, hidden in enumerate(hiddens):
+                result[:, layer].copy_(hidden.permute(1, 0, 2))
+            return result
+        return torch.stack([hidden.permute(1, 0, 2) for hidden in hiddens], dim=1)
+
+    def forward_from_frontend_features(self, frontend_features):
+        if frontend_features.ndim != 4 or frontend_features.shape[1] != 25 or frontend_features.shape[-1] != 1024:
+            raise ValueError("Expected cached frontend features [B,25,T,1024]")
+        states = frontend_features.to(self.device, dtype=torch.float32, non_blocking=True)
+        if states.shape[2] <= 0 or not torch.isfinite(states).all():
+            raise ValueError("Cached frontend features must have nonempty finite states")
+        hiddens = [states[:, layer].permute(1, 0, 2) for layer in range(25)]
+        return {"feats": self.bottleneck_proj(self.tnd_forward(hiddens))}
+
     def tnd_forward(self, hiddens, padding_mask=None):
         """Original XLSRTimeAttnOnly computation, without unused alternate heads."""
         T, N, D = hiddens[0].shape
@@ -83,3 +105,10 @@ class FSLPRF(nn.Module):
         for key in self.frontend_model.state_dict():
             del state[f"frontend_model.{key}"]
         return state
+
+
+def forward_batch(model, batch):
+    """Shared Train/Eval dispatch; pooling and projection stay in the model."""
+    if batch.get("input_kind") == "xlsr_feature":
+        return model.forward_from_frontend_features(batch["feats"])["feats"]
+    return model({"feats": batch["feats"]})["feats"]

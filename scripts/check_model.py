@@ -11,6 +11,7 @@ import _bootstrap
 from utils.config import common_parser, load_config
 from utils.provenance import UPSTREAM_COMMIT
 from utils.seed import seed_all
+from utils.numerics import tensor_errors
 from models.fs_lprf_model import FSLPRF
 from models.frontend_compat import LOAD_REPORT
 from engine.trainer import make_optimizer
@@ -70,6 +71,17 @@ def main():
         assert batch["feats"].shape == (1, 1, 64000)
         output = model({"feats": batch["feats"]})["feats"]
         assert output.shape == (1, 25, 256) and torch.isfinite(output).all()
+        with torch.no_grad():
+            cached_states = model.extract_frontend_features(batch["feats"], to_cpu=True)
+            cached_output = model.forward_from_frontend_features(cached_states)["feats"]
+            fp16_output = model.forward_from_frontend_features(cached_states.half())["feats"]
+            torch.testing.assert_close(output, cached_output, atol=1e-5, rtol=1e-5)
+            observed["cache_fp32_backend"] = tensor_errors(output, cached_output)
+            observed["cache_fp16_hidden"] = tensor_errors(cached_states, cached_states.half().float())
+            observed["cache_fp16_backend"] = tensor_errors(output, fp16_output)
+            observed["cache_fp32_diagnostic_loss"] = float(cached_output.square().mean())
+            observed["cache_fp16_diagnostic_loss"] = float(fp16_output.square().mean())
+            observed["cache_scope"] = "single synthetic WAV; real frozen frontend; diagnostic squared loss, no task metrics"
         # Diagnostic only: validate backend gradients without running an optimizer update.
         output.square().mean().backward()
         grads = {}

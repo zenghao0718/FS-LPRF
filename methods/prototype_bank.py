@@ -15,6 +15,8 @@ REAL_QUOTAS = {"AISHELL-1": 256, "AISHELL-3": 256, "LibriTTS": 256, "VCTK": 256}
 def select_bank_samples(dataset, seed):
     if dataset.split != "train" or dataset.do_augment:
         raise ValueError("Prototype bank requires unaugmented SpeechFake-BD Train")
+    if getattr(dataset, "cache_mode", "none") == "xlsr_feature":
+        raise ValueError("Prototype bank cannot reuse the augmented Train feature-cache view")
     rng = random.Random(seed)
     sources = defaultdict(list)
     for index in dataset.class_indices["real"]:

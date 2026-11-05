@@ -2,6 +2,8 @@
 
 依据 `FS-LPRF_Method_Design_v2.4.md` 与 `FS-LPRF_Phase1_Codex_Implementation_Spec_v1.3.md` 实施。第一阶段仅包含 SpeechFake-BD：3-way episodic training、五种子 Dev 选模与 Test 10-shot。正式训练、Dev/Test 和真实原型库构建由用户在 AutoDL 执行；本地仅做合成数据单元测试与真实 XLS-R 小批量 Smoke Test。
 
+数据管线已按《数据缓存与 DataLoader 加速实施规范 v1.0》更新：默认 Train Waveform Cache、Dev/Test XLS-R Feature Cache，训练 Worker 跨 Step 复用。方法计算、实验预算与原 Checkpoint 参数键保持不变。完整配置、构建/检查/基准命令及运行边界见 [docs/DATA_CACHE.md](docs/DATA_CACHE.md)，本机实施与验收见 [docs/CACHE_IMPLEMENTATION_REPORT.md](docs/CACHE_IMPLEMENTATION_REPORT.md)。
+
 ## 项目布局与运行入口
 
 核心模块采用平级科研代码布局：`data/`、`models/`、`methods/`、`engine/`、`utils/` 直接位于项目根目录，与 `configs/`、`scripts/`、`tests/` 和 `docs/` 平级。配置加载与来源信息分别位于 `utils/config.py`、`utils/provenance.py`。完整迁移前后目录树及逐文件清单见 [docs/PROJECT_LAYOUT.md](docs/PROJECT_LAYOUT.md)。
@@ -88,7 +90,7 @@ python scripts/check_data.py --config configs/speechfake.yaml \
 
 XLS-R 参数冻结、无梯度，调用 `model.train()` 后仍保持前端 eval。25 组 Hidden States（Transformer 前表示 + 24 层输出）经过官方逐层 Attention，输出 `[N,25,1024]`，再用一个共享 `Linear(1024,256)` 得到 `[N,25,256]`。不包含重建头、传统分类头、温度或额外归一化。
 
-每 Episode 独立均匀抽取 Real + 两个不同 Fake，每类 5 Support；默认每 Episode 15 Query、每 Step 8 Episode、音频微批次 8。每个 Episode 独立计算均值原型、余弦分类、Support 可靠性及逐层 CE。类间距离只累加 Real–Fake；类内离散为各类均值之和；可靠性为 `(inter+1e-8)/(intra+1e-8)`，开平方归一化后只 detach α。Support 原型仍保留梯度。一个 Step 的 Episode Loss 取平均后只 backward 一次、AdamW 更新一次。
+每 Episode 独立均匀抽取 Real + 两个不同 Fake，每类 5 Support；默认每 Episode 15 Query、每 Step 8 Episode、音频微批次 32。每个 Episode 独立计算均值原型、余弦分类、Support 可靠性及逐层 CE。类间距离只累加 Real–Fake；类内离散为各类均值之和；可靠性为 `(inter+1e-8)/(intra+1e-8)`，开平方归一化后只 detach α。Support 原型仍保留梯度。一个 Step 的 Episode Loss 取平均后只 backward 一次、AdamW 更新一次。
 
 固定训练种子 42、4000 Steps、AdamW LR 1e-4、betas (0.9,0.999)、weight decay 1e-4、warmup 100 Steps、cosine 降至 1e-6、梯度裁剪 1.0。本轮依据训练验证重构 v1.0 固定每 Step 8 Episode、每 Episode 15 Query；音频微批次及两档验证周期通过配置管理，模型与训练算法不变。
 
@@ -96,7 +98,7 @@ XLS-R 参数冻结、无梯度，调用 `model.train()` 后仍保持前端 eval�
 
 Dev/Test 都是 10-shot、种子 `[17,42,71,100,123]`。每个种子的 Real Support 在 32 个任务间共用。预先保存各种子 Support；Query 为各类全量样本排除五组 Support 并集后的剩余 ID。Manifest 只创建一次，复用时核对元数据指纹和划分完整性。
 
-所有 split 均保留官方随机裁剪。每次评估按种子重置 Python/NumPy/PyTorch CPU/CUDA RNG，固定数据顺序和 DataLoader generator；workers 由 `torch.initial_seed()` 初始化，`persistent_workers=False`。同一 Dev 种子跨 Checkpoint 的裁剪序列一致，不同种子允许不同。结束后恢复训练 RNG 与训练模式。
+所有 split 均复用官方随机裁剪函数。默认 Train 缓存完整预处理波形，裁剪/增强保持在线；Dev/Test 的裁剪在固定 mode/seed 的前端缓存生成时执行。逐样本 SHA-256 种子隔离 Python/NumPy/CPU Torch RNG，0/2/4/8 Worker 不改变同一 Step/View 的输入。训练 Loader 跨 Step 复用，默认持续 Worker；评估继续恢复训练 RNG 与模型模式。新固定 View 不宣称与旧运行逐样本裁剪位置相同，启用新管线必须使用新输出目录。
 
 调度依据 `FS-LPRF_Codex_Training_Validation_Refactor_v1.0.md` 更新为：
 
@@ -108,12 +110,17 @@ Dev/Test 都是 10-shot、种子 `[17,42,71,100,123]`。每个种子的 Real Sup
 
 恢复需要原输出目录、配置、两个 Dev Manifest、节点和完整 Dev 历史。模型后端、Optimizer、Scheduler 与 RNG 一起恢复。节点已有但完整 Dev 完成标记/报告缺失时，会先补做验证再执行下一 Step。完成标记绑定节点和全部 5 份报告的 SHA-256；Best 从已完成历史重建。目录中有未来节点时拒绝倒退覆盖，请恢复最新节点；先前节点历史损坏则需恢复匹配的完整文件。中断最多丢失上一里程碑后未保存的 **799 Steps**，这是降低存盘频率的明确权衡。
 
+先按 [缓存流程](docs/DATA_CACHE.md) 显式构建并检查完整 Train Waveform 和 Light/Full Dev Feature Cache。训练缺失缓存时明确报错，不会静默生成或回退 WAV。
+
 ```bash
+python scripts/build_cache.py --config configs/speechfake.yaml --split train --mode waveform --dry-run
+python scripts/build_cache.py --config configs/speechfake.yaml --split train --mode waveform
+python scripts/build_cache.py --config configs/speechfake.yaml --split dev --mode xlsr_feature --validation-modes light,full
 python scripts/train.py --config configs/speechfake.yaml
 python scripts/train.py --config configs/speechfake.yaml --resume outputs/speechfake_fs_lprf/checkpoints/step_0800.pt
 # 完成训练和Dev选模后，才执行正式Test：
 python scripts/evaluate.py --config configs/speechfake.yaml --checkpoint best --shot 10
-# 也可明确指定任一节点路径（测试应使用最终选出的节点）：
+# 也可明确指定最终 Best 节点路径，Feature Cache 模式会核对 Best 索引：
 python scripts/evaluate.py --config configs/speechfake.yaml --checkpoint outputs/speechfake_fs_lprf/checkpoints/step_0800.pt --shot 10
 ```
 
@@ -128,7 +135,7 @@ python -m pytest -q
 python scripts/check_model.py --config configs/speechfake.yaml
 ```
 
-Pytest 使用合成向量和临时 WAV，包含梯度、损失聚合、一次更新、音频处理、五种子固定划分、0/2 workers 的裁剪复现、RNG 恢复、合成 33 类原型库与 Checkpoint 往返测试，并覆盖阻止外部包导入时的全部模块加载、小型 Transformer 与原固定版本输出对照、逐层 Attention 数值/梯度及 EER 同分阈值。`check_model.py` 使用正式模型、真实权重和一条合成 4 秒 WAV，核对 25 组 Hidden States、池化/投影形状、前端冻结、所有层 Attention 与共享 Bottleneck 梯度，以及原有后端 Checkpoint 保存逻辑；不执行优化器更新。报告写入 `outputs/local_smoke/model_report.json`。本地实测记录见 [docs/LOCAL_VALIDATION.md](docs/LOCAL_VALIDATION.md)。
+Pytest 使用合成向量和临时 WAV，覆盖梯度、损失聚合、一次更新、音频处理、五种子固定划分、0/2/4/8 Worker 输入一致性与持续进程、RNG 恢复、分片缓存完整性/续建、FP32/FP16、Test 隔离、合成原型库与 Checkpoint 往返，并保留全部原有测试。`check_model.py` 使用正式模型、已有权重和一条合成 4 秒 WAV，额外比较在线与缓存前端状态的 FP32/FP16 后端输出；仍核对冻结、全部可训练层梯度及后端 Checkpoint，不执行优化器更新。报告写入 `outputs/local_smoke/model_report.json`。本地实测记录见 [docs/LOCAL_VALIDATION.md](docs/LOCAL_VALIDATION.md)。
 
 ## 0-shot 接口（本阶段仅合成测试）
 

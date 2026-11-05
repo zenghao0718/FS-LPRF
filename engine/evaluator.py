@@ -4,7 +4,9 @@ from tempfile import TemporaryDirectory
 import time
 import numpy as np
 import torch
-from data.loaders import audio_loader
+from data.loaders import audio_loader, worker_options
+from data.cache_pipeline import evaluation_view, view_tokens
+from models.fs_lprf_model import forward_batch
 from methods.inference import kshot_task, kshot_scores, predict
 from utils.metrics import binary_metrics, macro_metrics, mean_std, METRICS
 from utils.logging import write_csv
@@ -12,11 +14,11 @@ from utils.seed import seed_all, preserved_rng
 
 
 def feature_batches(model, dataset, ids, cfg, seed):
-    indices = [dataset.uttid2idx[uid] for uid in ids]
+    indices = view_tokens(dataset, ids, seed, getattr(dataset, "validation_mode", "full"))
     loader = audio_loader(dataset, indices, cfg["train"]["audio_microbatch_size"],
-                          seed, cfg["runtime"]["num_workers"])
+                          seed, **worker_options(cfg))
     for batch in loader:
-        yield batch["uttids"], model({"feats": batch["feats"]})["feats"]
+        yield batch["uttids"], forward_batch(model, batch)
 
 
 def extract_features(model, dataset, ids, cfg, seed):
@@ -134,12 +136,13 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
             model.eval()
             for seed in manifest["seeds"]:
                 seed_all(seed)
+                seed_dataset = evaluation_view(dataset, cfg, mode or "full", seed)
                 supports = manifest["supports"][str(seed)]
-                real_support = extract_features(model, dataset, supports["real"], cfg, seed).to(model.device)
+                real_support = extract_features(model, seed_dataset, supports["real"], cfg, seed).to(model.device)
                 tasks = {}
                 # Encode shared Real Support once; each Fake task still builds its own alpha.
                 for name in dataset.fake_classes:
-                    fake_support = extract_features(model, dataset, supports[name], cfg, seed).to(model.device)
+                    fake_support = extract_features(model, seed_dataset, supports[name], cfg, seed).to(model.device)
                     features = torch.cat([real_support, fake_support])
                     labels = torch.tensor([0] * len(real_support) + [1] * len(fake_support), device=model.device)
                     tasks[name] = kshot_task(features, labels)
@@ -153,13 +156,13 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
                                      for uid, score, prediction in zip(ids, scores, predictions))
                     return scores.numpy()
 
-                for ids, features in feature_batches(model, dataset, manifest["queries"]["real"], cfg, seed):
+                for ids, features in feature_batches(model, seed_dataset, manifest["queries"]["real"], cfg, seed):
                     for name in dataset.fake_classes:
                         real_scores[name].append(record(ids, features, name, 0))
                 seed_rows = []
                 for name in dataset.fake_classes:
                     fake_scores = [record(ids, features, name, 1) for ids, features in
-                                   feature_batches(model, dataset, manifest["queries"][name], cfg, seed)]
+                                   feature_batches(model, seed_dataset, manifest["queries"][name], cfg, seed)]
                     real = np.concatenate(real_scores[name])
                     fake = np.concatenate(fake_scores)
                     values = binary_metrics(np.r_[np.zeros(len(real)), np.ones(len(fake))], np.r_[real, fake])

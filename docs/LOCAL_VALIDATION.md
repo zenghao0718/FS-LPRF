@@ -156,3 +156,15 @@ Bootstrap 现在定位项目根目录；pytest 使用根目录 Python 路径。�
 旧源码目录迁移后仅剩生成字节码，经核对后清除；当前运行代码、测试和部署命令没有旧路径依赖。旧文件位置只在专门的迁移对照文档中保留。机器验收辅助文件及迁移前合成序列化文件位于被 Git 忽略的 `outputs/flat_layout_validation/`。
 
 本次未操作 AutoDL、未下载数据/模型/资源、未读取真实数据集、未运行真实 XLS-R Smoke 或正式训练。
+
+## 2026-11-05：数据缓存与可复用 DataLoader
+
+基线 `5023b6e` 为 149 项测试。本轮新增 58 项，最终完整 pytest **207 passed、0 failed、0 skipped，74.68 秒**，78 条既有告警；`pip check` 无冲突，原六个及新增两个 CLI 的帮助入口全部通过。所有原有测试保留，使用既有 Python 3.11.18 / torch、torchaudio 2.7.1+cu128，未安装或下载依赖。
+
+默认 Train 完整预处理 Waveform Cache、Dev/Test 25 层 XLS-R Feature Cache，保留 none 和 Train 单 View feature 对照。分片完整性、续建/保留旧缓存、FP32/FP16、逐样本 RNG、0/2/4/8 Worker 一致性、跨 Step 进程复用/退出、缓存评估等价、Real 复用、Test 隔离及恢复身份均通过合成测试。
+
+针对 Windows 八 Worker 并行导入阶段的异常，将线程上限提前传入子进程启动环境，初始化函数继续设置 Torch 线程；父进程原环境在启动后或异常时恢复。所有配置的 Worker 均实际处理样本，未减少或跳过八 Worker 覆盖。数据/分片校验和按文件状态在进程内复用，变化时重新读取校验。
+
+使用已有官方权重和单条合成 4 秒 WAV 的极小 CUDA Smoke 通过，无优化器更新。完整前端 `[1,25,199,1024]`，FP32 在线/缓存后端误差为 0；FP16 后端最大绝对误差 0.0030708313、相对 L2 8.6016903e-5。364800 个可训练参数、原后端键和前端冻结/eval 保持。FP16 默认未启用，真实数据指标尚未验证。
+
+逐文件实施清单、数值误差、测试范围与未验证项见 [CACHE_IMPLEMENTATION_REPORT.md](CACHE_IMPLEMENTATION_REPORT.md)；缓存、基准与正式 AutoDL 命令见 [DATA_CACHE.md](DATA_CACHE.md)。机器报告仅位于被忽略的 `outputs/cache_validation/`。本机未连接 AutoDL、未下载资源、未执行真实训练、全量真实 Dev/Test 或 0-shot。

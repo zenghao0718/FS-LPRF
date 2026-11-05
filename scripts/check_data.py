@@ -11,11 +11,15 @@ from data.evaluation_manifest import load_or_create_manifest
 def main():
     parser = common_parser("Validate SpeechFake-BD manifests, capacities, paths and fixed evaluation splits")
     parser.add_argument("--read-samples", type=int, default=1, help="Audio records to decode per split; default 1")
+    parser.add_argument("--splits", nargs="+", choices=["train", "dev", "test"], default=["train", "dev", "test"],
+                        help="Use --splits train dev for pre-training checks without opening Test")
     args = parser.parse_args()
     cfg = load_config(args.config, args.set)
     seen_ids, seen_paths, classes = set(), set(), None
     summaries = {}
-    for split in ("train", "dev", "test"):
+    if len(args.splits) != len(set(args.splits)):
+        raise ValueError("--splits must not repeat a split")
+    for split in args.splits:
         ds = SpeechFakeDataset(cfg["data"], split, train_mode=False)
         if classes is not None and classes != ds.fake_classes:
             raise ValueError("Train/Dev/Test attacker class mappings must match")

@@ -59,6 +59,8 @@ class SpeechFakeDataset(GeneralFAD):
         options["do_augment"] = False
         super().__init__(Namespace(**options), split, train_mode=train_mode)
         self.do_augment = train_mode and data_config["do_augment"]
+        self.cache_mode, self.cache_reader = "none", None
+        self.feature_caches = {}
         if self.do_augment:
             rir_root = data_config.get("rir_root") or os.environ.get("FS_LPRF_RIR_ROOT")
             if not rir_root:
@@ -72,10 +74,47 @@ class SpeechFakeDataset(GeneralFAD):
         if len(self.fake_classes) != 32 or not self.class_indices["real"]:
             raise ValueError(f"SpeechFake-BD requires Real and exactly 32 distinct Fake attacker classes; got {len(self.fake_classes)}")
 
+    def use_cache(self, reader, mode):
+        if mode not in ("waveform", "xlsr_feature") or reader.identity["split"] != self.split:
+            raise ValueError("Cache mode/split does not match the dataset")
+        if mode == "xlsr_feature" and self.do_augment:
+            raise ValueError("Cached features must not be augmented again")
+        self.cache_mode, self.cache_reader = mode, reader
+        return self
+
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        state.pop("_cache_source_hashes", None)
+        return state
+
+    def load_preprocessed_waveform(self, uttid):
+        if self.cache_mode == "waveform":
+            return self.cache_reader.get(uttid)
+        return super().load_preprocessed_waveform(uttid)
+
+    @staticmethod
+    def collate_fn(batch):
+        if batch and batch[0].get("input_kind") == "xlsr_feature":
+            if any(sample.get("input_kind") != "xlsr_feature" or sample["feats"].shape != batch[0]["feats"].shape for sample in batch):
+                raise ValueError("Cannot mix cached hidden-state shapes or waveform/feature inputs")
+            return dict(uttids=[sample["uttid"] for sample in batch],
+                        feats=torch.stack([sample["feats"] for sample in batch]), input_kind="xlsr_feature",
+                        labels=torch.tensor([sample["label"] for sample in batch]))
+        return GeneralFAD.collate_fn(batch)
+
     def __getitem__(self, index):
+        if isinstance(index, tuple):
+            from .randomness import sample_rng
+            with sample_rng(index[1]):
+                return self[index[0]]
         # Preserve all official audio processing but never silently substitute another class.
         uttid = self.uttids[index]
         try:
+            if self.cache_mode == "xlsr_feature":
+                feats = self.cache_reader.get(uttid)
+                if feats.ndim != 3 or feats.shape[0] != 25 or feats.shape[-1] != 1024:
+                    raise ValueError("Expected complete cached frontend states [25,T,1024]")
+                return dict(uttid=uttid, feats=feats, input_kind="xlsr_feature", **self.uttid2info[uttid])
             result = self._getitem_impl(index)
             if result is None or result["feats"].shape != (1, 64000):
                 raise ValueError("Expected official fixed-length mono waveform [1,64000]")

@@ -137,23 +137,45 @@ cfg['data']['data_path'] = '/root/autodl-tmp/speechfake/manifests'
 cfg['data']['rir_root'] = '/root/autodl-tmp/resources/RIRS_NOISES'
 cfg['model']['frontend_path'] = '/root/autodl-tmp/pretrained/xlsr2_300m.pt'
 cfg['runtime']['device'] = 'cuda:0'
-cfg['runtime']['num_workers'] = 0
-cfg['runtime']['output_dir'] = '/root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf'
+cfg['cache']['root'] = '/root/autodl-tmp/fs_lprf_cache'
+cfg['runtime'].pop('num_workers', None)
+cfg['runtime']['train_num_workers'] = 4
+cfg['runtime']['eval_num_workers'] = 2
+cfg['runtime']['output_dir'] = '/root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1'
 p.write_text(yaml.safe_dump(cfg, sort_keys=False))
 PY
 ```
 
 若沿用旧配置，请删除 `train.validation_interval_steps`，加入 `train.light_validation_interval_steps: 200`、`train.full_validation_interval_steps: 800`、`validation.light_seed: 42`、`validation.light_max_query_per_class: 1000`。旧正式训练目录不会自动迁移为新调度；请保留它们并另选新输出目录。
 
-默认 `num_workers=0` 最容易核对裁剪复现；需要提高吞吐量时可在训练开始前改为 4 等值，之后验证与恢复保持一致。`audio_microbatch_size=8` 是 A100 默认；如显存受其他进程影响，仅调整音频微批次，不静默改变每 Step Episode 数、每 Episode Support/Query 或训练预算。
+默认 Train 4 / Eval 2 个多进程 Worker；训练 Loader 与持续 Worker 跨 Step 复用。可独立设置 0/2/4/8，并调整预取、pin memory、Worker Torch 线程；旧 `runtime.num_workers` 会发弃用提示并作为兼容覆盖值，应从新配置移除。逐样本 RNG 已与 Worker 生命周期解耦，恢复可更换纯性能参数。`audio_microbatch_size=32` 沿用当前 main，基准时固定；显存不足时只在新 Run 明确调整微批次，不改变每 Step Episode、Support/Query 或预算。Feature Cache 预取的 RAM 代价较大，应实测较小 prefetch（如 1）。
+
+新管线默认 Train `waveform`、Dev/Test `xlsr_feature`、FP32。必须使用新的 `output_dir`，保留旧实验目录；旧输入管线的中间状态不可直接接着训练。缓存构建、Train feature 对照与 Baseline 的完整说明见 [DATA_CACHE.md](DATA_CACHE.md)。
 
 ## 5. 开跑前检查
 
 ```bash
-python scripts/check_data.py --config configs/speechfake.autodl.yaml
+python scripts/check_data.py --config configs/speechfake.autodl.yaml --splits train dev
 ```
 
-数据准备完成后才执行本节检查，核对所有路径、类别与容量，并保存固定 Dev/Test Manifest。训练启动前会再次验证 Dev Manifest；已存在时直接复用，清单或配置变化会明确报错。第 3 节的 Smoke Test 应已通过；若又更换前端权重路径或运行环境，应使用最终配置重新执行 Smoke Test。
+数据准备完成后才执行本节检查，核对 Train/Dev 路径、类别与容量，保存固定 Dev Manifest。检查器仍保留默认三个 split 的原检查，也可显式选择 split；训练前使用上面的选择不打开 Test。训练启动前再次验证两个 Dev Manifest；清单或配置变化明确报错。第 3 节 Smoke 应已通过；更换权重或环境后重新执行。
+
+先估算空间，使用少量样本做缓存 Smoke，通过后再构建完整缓存（`--limit` 产物禁止正式训练使用）：
+
+```bash
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform --dry-run
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform --limit 1000
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode xlsr_feature \
+  --validation-modes light,full --limit 100 --seeds 42
+# 完整正式缓存
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode xlsr_feature \
+  --validation-modes light,full --dry-run
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode xlsr_feature \
+  --validation-modes light,full
+```
+
+超出磁盘阈值需确认或显式 `--confirm-large-cache`；中断使用 `--resume`，重建 `--force` 保留旧缓存。训练只检查匹配缓存，不会隐式生成。先在 AutoDL 比较 `none,waveform` 的 Worker 0/2/4/8（5 warmup + 20 timed），准备完整 Train feature 缓存后再加入 `xlsr_feature`，命令与总实验时间计算见 [DATA_CACHE.md](DATA_CACHE.md)。真实性能与完整 Dev 空间尚需 AutoDL 实测。
 
 ## 6. 正式训练与恢复
 
@@ -167,20 +189,20 @@ python scripts/train.py --config configs/speechfake.autodl.yaml
 
 ```bash
 python scripts/train.py --config configs/speechfake.autodl.yaml \
-  --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf/checkpoints/step_0800.pt
+  --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1/checkpoints/step_0800.pt
 ```
 
 可在另一个终端查看日志和 TensorBoard：
 
 ```bash
-tail -f /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf/train.log
-tensorboard --logdir /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf/tensorboard \
+tail -f /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1/train.log
+tensorboard --logdir /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1/tensorboard \
   --host 0.0.0.0 --port 6006
 ```
 
 ## 7. Test 10-shot
 
-本次重构不执行 Test。后续训练、Dev 选模与调参全部完成后，用以下命令解析最终 Best 节点进行正式 Test（亦可将 `best` 换成明确的 `step_XXXX.pt` 路径）：
+本机不执行真实 Test。后续训练、Dev 选模与调参全部完成后，以下入口才解析/加载 Best，并生成或读取 Test 前端缓存，随后按原结构输出正式指标。显式节点路径必须与 Best 索引一致；普通缓存命令不能生成 Test。可先用同一命令加 `--cache-dry-run` 只估算，不计算指标；超阈值需确认后加 `--confirm-large-cache`。首次缓存创建与正式评估耗时分开记录，不能把缓存后重复读取速度当作首次收益。
 
 ```bash
 python scripts/evaluate.py --config configs/speechfake.autodl.yaml \
@@ -192,6 +214,6 @@ python scripts/evaluate.py --config configs/speechfake.autodl.yaml \
 
 ## 8. 交付产物与范围
 
-正式输出目录包含 `config_resolved.yaml`、`run_state.json`、`train.log`、Episode 日志、`tensorboard/`、5 份 `checkpoints/step_XXXX.pt`、`checkpoints/best_checkpoint.json` 及 `evaluation/`。`evaluation/full/` 每个节点有逐种子/逐类 Mean±Std/Macro/预测五份 CSV，以及全部写入成功后才创建的完成标记；`evaluation/light/` 独立保存监控报告。续跑应保留整个目录，尤其是原始完整和轻量 Dev Manifest。具体文件名和恢复限制见 [VALIDATION_SCHEDULE.md](VALIDATION_SCHEDULE.md)。
+正式输出目录包含 `config_resolved.yaml`、`run_state.json`、`cache_bindings.json`、`cache_metadata/`、`train.log`、Episode 日志、`tensorboard/`、5 份节点、Best 索引及 `evaluation/`。完整/轻量报告与完成标记保留原结构。续跑应保留整个目录及匹配缓存，缓存内容/模式/RNG schema 不一致会拒绝恢复；纯 Worker 性能参数可调整。具体文件名和恢复限制见 [VALIDATION_SCHEDULE.md](VALIDATION_SCHEDULE.md)。
 
 不要将数据、RIR、预训练文件或任何训练 Checkpoint 提交 Git。当前阶段不运行真实 0-shot、其他 Shot、基线、消融或 ASVspoof。原型库构建脚本仅供后续阶段调用，已通过合成数据接口测试。

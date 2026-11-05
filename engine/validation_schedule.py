@@ -42,13 +42,17 @@ def atomic_json(path, payload):
     temp.replace(path)
 
 
-def make_run_identity(cfg, manifest_hash, light_manifest_hash, train_fingerprint):
-    # Paths, worker count, microbatch and scientific settings are fixed for a resumed run.
-    # CUDA ordinal may change when the same run is restored on a different host/GPU.
+def make_run_identity(cfg, manifest_hash, light_manifest_hash, train_fingerprint, cache_bindings=None):
+    from data.randomness import RNG_SCHEMA_VERSION
     config = json.loads(json.dumps(cfg))
-    config["runtime"].pop("device", None)
-    payload = dict(version=1, config=config, dev_manifest_sha256=manifest_hash,
-                   light_manifest_sha256=light_manifest_hash, train_fingerprint=train_fingerprint)
+    for key in ("device", "num_workers", "train_num_workers", "eval_num_workers", "persistent_train_workers",
+                "prefetch_factor", "pin_memory", "worker_torch_num_threads"):
+        config["runtime"].pop(key, None)
+    for key in ("root", "shard_size", "verify_checksums", "warn_if_estimated_gb_above"):
+        config.get("cache", {}).pop(key, None)
+    payload = dict(version=2, config=config, dev_manifest_sha256=manifest_hash,
+                   light_manifest_sha256=light_manifest_hash, train_fingerprint=train_fingerprint,
+                   rng_schema_version=RNG_SCHEMA_VERSION, cache_bindings=cache_bindings)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 

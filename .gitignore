@@ -15,6 +15,7 @@ dist/
 /outputs/
 /logs/
 /.cache/
+/cache/
 /.tmp/
 *.pt
 *.pth

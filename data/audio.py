@@ -145,7 +145,13 @@ class FADTrim(Dataset):
         feats = feats[:, stt:stt+self.max_len]
         return feats
 
-    def get_audio(self, uttid):
+    def load_preprocessed_waveform(self, uttid):
+        """Original file/preprocessing path, before sample_segment and augmentation.
+
+        The optional st/dur read branch is deliberately retained. Waveform cache
+        builders reject that branch because its random file read is not a full
+        deterministic waveform.
+        """
         audio_path = self.uttid2path[uttid]
         if not os.path.exists(audio_path):
             raise ValueError(f"File {audio_path} does not exist")
@@ -166,6 +172,10 @@ class FADTrim(Dataset):
                                                   frame_offset=frame_offset, num_frames=num_frames)
         if audio.shape[1] == 0:
             raise ValueError(f"Audio {audio_path} is empty")
+        return audio
+
+    def get_audio(self, uttid):
+        audio = self.load_preprocessed_waveform(uttid)
         if self.fix_len:
             audio = self.sample_segment(audio)
         else:

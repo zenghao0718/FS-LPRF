@@ -1,6 +1,9 @@
 data:
   data_path: ""
   rir_root: ""
+  train_cache_mode: waveform
+  dev_cache_mode: xlsr_feature
+  test_cache_mode: xlsr_feature
   max_samples: 64000
   fix_len: true
   trim_silence: true
@@ -47,7 +50,22 @@ test:
   shot: 10
   seeds: [17, 42, 71, 100, 123]
 
+cache:
+  root: cache/fs_lprf
+  schema_version: 1
+  feature_dtype: float32
+  feature_build_batch_size: 8
+  shard_size: 64
+  verify_checksums: true
+  train_feature_seed: null
+  warn_if_estimated_gb_above: 100
+
 runtime:
   device: cuda:0
-  num_workers: 0
+  train_num_workers: 4
+  eval_num_workers: 2
+  persistent_train_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+  worker_torch_num_threads: 1
   output_dir: outputs/speechfake_fs_lprf
