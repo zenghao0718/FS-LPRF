@@ -125,11 +125,11 @@ def _cli(name, monkeypatch):
     return module
 
 
-def test_test_cache_creation_happens_after_best_resolution_and_checkpoint_load(config, tmp_path, monkeypatch):
+def test_raw_test_happens_after_best_resolution_without_cache_access(config, tmp_path, monkeypatch):
     cli = _cli("evaluate", monkeypatch)
     cfg = copy.deepcopy(config)
     cfg["runtime"]["output_dir"] = str(tmp_path)
-    cfg["data"]["test_cache_mode"] = "xlsr_feature"
+    cfg["data"]["test_cache_mode"] = "none"
     (tmp_path / "evaluation").mkdir()
     events = []
     node = tmp_path / "step_0800.pt"
@@ -142,12 +142,18 @@ def test_test_cache_creation_happens_after_best_resolution_and_checkpoint_load(c
     monkeypatch.setattr(cli, "load_or_create_manifest", lambda *args: events.append("manifest") or {})
     monkeypatch.setattr(cli, "FSLPRF", lambda *args: object())
     monkeypatch.setattr(cli, "load_checkpoint", lambda *args: events.append("load_checkpoint"))
-    monkeypatch.setattr(cli, "prepare_final_test_caches", lambda *args, **kwargs: events.append("test_cache"))
+    forbidden_cache = Mock(side_effect=AssertionError("Test must never build/read caches"))
+    monkeypatch.setattr(cli, "prepare_final_test_caches", forbidden_cache)
     monkeypatch.setattr(cli, "evaluate", lambda *args: events.append("test_metrics") or {"mean_eer": .2})
     monkeypatch.setattr(sys, "argv", ["evaluate.py", "--checkpoint", "best"])
     cli.main()
     assert events.index("best") < events.index("test_dataset") < events.index("load_checkpoint")
-    assert events.index("load_checkpoint") < events.index("test_cache") < events.index("test_metrics")
+    assert events.index("load_checkpoint") < events.index("test_metrics")
+    forbidden_cache.assert_not_called()
+    cfg["data"]["test_cache_mode"] = "waveform"
+    with pytest.raises(ValueError, match="original WAVs"):
+        cli.main()
+    cfg["data"]["test_cache_mode"] = "none"
     forbidden = Mock(side_effect=AssertionError("Test must stay untouched without Best"))
     monkeypatch.setattr(cli, "SpeechFakeDataset", forbidden)
     monkeypatch.setattr(cli, "resolve_checkpoint", Mock(side_effect=ValueError("Best not selected")))

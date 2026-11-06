@@ -53,7 +53,8 @@ def worker_options(cfg, training=False):
                       "(the legacy value is used as a compatibility override)", FutureWarning, stacklevel=2)
     workers = legacy if legacy is not None else runtime.get(
         "train_num_workers" if training else "eval_num_workers", 4 if training else 2)
-    return dict(num_workers=workers, persistent_workers=training and runtime.get("persistent_train_workers", True),
+    return dict(num_workers=workers, persistent_workers=runtime.get(
+                    "persistent_train_workers" if training else "persistent_eval_workers", True),
                 prefetch_factor=runtime.get("prefetch_factor", 2), pin_memory=runtime.get("pin_memory", True),
                 worker_torch_num_threads=runtime.get("worker_torch_num_threads", 1))
 
@@ -112,36 +113,81 @@ class StepSampler(Sampler):
 
 
 class ReusableAudioLoader:
-    """One loader per run; only its main-process sampler changes between steps."""
-    def __init__(self, dataset, cfg):
-        self.dataset, self.seed = dataset, cfg["train"]["seed"]
+    """Reuse a sampler only after its previous stream is exhausted.
+
+    Training retains its original per-step tokens. Evaluation supplies explicit
+    view tokens, so merging classes never changes any sample's crop seed.
+    """
+    def __init__(self, dataset, cfg, *, training=True, seed=None, batch_size=None):
+        self.dataset = dataset
+        self.seed = cfg["train"]["seed"] if seed is None else seed
         self.sampler = StepSampler()
-        self.loader = audio_loader(dataset, self.sampler, cfg["train"]["audio_microbatch_size"],
-                                   self.seed, **worker_options(cfg, training=True))
+        self.loader = audio_loader(dataset, self.sampler,
+                                   cfg["train"]["audio_microbatch_size"] if batch_size is None else batch_size,
+                                   self.seed, **worker_options(cfg, training=training))
         self.busy, self.incomplete, self.closed = False, False, False
+        self._active_iterator = None
 
     def for_step(self, indices, step):
+        return self._for_tokens(_tokens(self.dataset, indices, self.seed, step))
+
+    def for_indices(self, indices):
+        """Read ordered indices or explicit (index, seed) tokens with this loader."""
+        return self._for_tokens(_tokens(self.dataset, indices, self.seed))
+
+    def _for_tokens(self, tokens):
         if self.busy or self.incomplete or self.closed:
-            raise RuntimeError("Fully consume the current step before changing sampler indices")
-        self.sampler.tokens = list(_tokens(self.dataset, indices, self.seed, step))
+            raise RuntimeError("Fully consume the current stream before changing sampler indices; closed loaders cannot be reused")
+        self.sampler.tokens = list(tokens)
         self.busy = True
         complete = False
         try:
-            for batch in self.loader:
+            self._active_iterator = iter(self.loader)
+            for batch in self._active_iterator:
                 yield batch
             complete = True
         finally:
             self.busy, self.incomplete = False, not complete
+            if not complete:
+                # Reject stale sampler resets and release prefetch on early exit.
+                self.close()
+            self._active_iterator = None
 
     def close(self):
-        iterator = getattr(self.loader, "_iterator", None)
-        if iterator is not None:
-            iterator._shutdown_workers()
-            self.loader._iterator = None
         self.closed = True
+        active, persistent = self._active_iterator, getattr(self.loader, "_iterator", None)
+        try:
+            for iterator in (active, persistent if persistent is not active else None):
+                shutdown = getattr(iterator, "_shutdown_workers", None)
+                if shutdown is not None:
+                    shutdown()
+        finally:
+            self.loader._iterator = None
+            self._active_iterator = None
 
     def __enter__(self):
+        if self.closed:
+            raise RuntimeError("Cannot reopen a closed audio loader")
         return self
 
     def __exit__(self, *args):
         self.close()
+
+
+class PreprocessedWaveformDataset(Dataset):
+    """Full official waveforms for cache builds: no crop, padding or augmentation."""
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.uttids = dataset.uttids
+
+    def __len__(self):
+        return len(self.uttids)
+
+    def __getitem__(self, index):
+        uid = self.uttids[index]
+        return uid, self.dataset.load_preprocessed_waveform(uid)
+
+    @staticmethod
+    def collate_fn(batch):
+        # Variable lengths must remain exact; never pad the cached waveforms.
+        return batch

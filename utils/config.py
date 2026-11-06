@@ -11,12 +11,12 @@ CACHE_DEFAULTS = dict(root="cache/fs_lprf", schema_version=1, feature_dtype="flo
 
 
 def add_pipeline_defaults(cfg):
-    for split, default in (("train", "waveform"), ("dev", "xlsr_feature"), ("test", "xlsr_feature")):
+    for split, default in (("train", "waveform"), ("dev", "waveform"), ("test", "none")):
         cfg["data"].setdefault(f"{split}_cache_mode", default)
     cache = cfg.setdefault("cache", {})
     for key, value in CACHE_DEFAULTS.items():
         cache.setdefault(key, value)
-    for key, value in dict(train_num_workers=4, eval_num_workers=2, persistent_train_workers=True,
+    for key, value in dict(train_num_workers=4, eval_num_workers=2, persistent_train_workers=True, persistent_eval_workers=True,
                            prefetch_factor=2, pin_memory=True, worker_torch_num_threads=1).items():
         cfg["runtime"].setdefault(key, value)
 
@@ -80,7 +80,7 @@ def validate_config(cfg):
     if type(cfg["validation"]["light_seed"]) is not int:
         raise ValueError("Phase 1 protocol requires validation.light_seed=42 as an integer")
     for split in ("train", "dev", "test"):
-        allowed = ("none", "waveform", "xlsr_feature") if split == "train" else ("none", "xlsr_feature")
+        allowed = ("none",) if split == "test" else ("none", "waveform")
         if cfg["data"][f"{split}_cache_mode"] not in allowed:
             raise ValueError(f"Invalid data.{split}_cache_mode")
     runtime, cache = cfg["runtime"], cfg["cache"]
@@ -91,7 +91,7 @@ def validate_config(cfg):
                            (cache, ("feature_build_batch_size", "shard_size"))):
         if any(type(section[key]) is not int or section[key] <= 0 for key in keys):
             raise ValueError("Worker threads, prefetch, shard and feature build batch size must be positive integers")
-    for section, keys in ((runtime, ("persistent_train_workers", "pin_memory")), (cache, ("verify_checksums",))):
+    for section, keys in ((runtime, ("persistent_train_workers", "persistent_eval_workers", "pin_memory")), (cache, ("verify_checksums",))):
         if any(type(section[key]) is not bool for key in keys):
             raise ValueError("Persistent workers, pin_memory and verify_checksums must be booleans")
     if cache["schema_version"] != 1 or type(cache["schema_version"]) is not int:

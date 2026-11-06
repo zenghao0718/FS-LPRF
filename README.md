@@ -1,8 +1,8 @@
 # FS-LPRF · SpeechFake-BD Phase 1
 
-依据 `FS-LPRF_Method_Design_v2.4.md` 与 `FS-LPRF_Phase1_Codex_Implementation_Spec_v1.3.md` 实施。第一阶段仅包含 SpeechFake-BD：3-way episodic training、五种子 Dev 选模与 Test 10-shot。正式训练、Dev/Test 和真实原型库构建由用户在 AutoDL 执行；本地仅做合成数据单元测试与真实 XLS-R 小批量 Smoke Test。
+依据 `FS-LPRF_Method_Design_v2.4.md` 与 `FS-LPRF_Phase1_Codex_Implementation_Spec_v1.3.md` 实施。第一阶段仅包含 SpeechFake-BD：3-way episodic training、五种子 Dev 选模与 Test 10-shot。正式训练、Dev/Test 和真实原型库构建由用户在 AutoDL 执行；本地做单元测试、已有 XLS-R 小批量 Smoke Test，以及独立 Real 目录的数据加载基准；Real 基准不加载模型或报告分类指标。
 
-数据管线已按《数据缓存与 DataLoader 加速实施规范 v1.0》更新：默认 Train Waveform Cache、Dev/Test XLS-R Feature Cache，训练 Worker 跨 Step 复用。方法计算、实验预算与原 Checkpoint 参数键保持不变。完整配置、构建/检查/基准命令及运行边界见 [docs/DATA_CACHE.md](docs/DATA_CACHE.md)，本机实施与验收见 [docs/CACHE_IMPLEMENTATION_REPORT.md](docs/CACHE_IMPLEMENTATION_REPORT.md)。
+数据管线已按《数据缓存与 DataLoader 加速实施规范 v1.0》更新：默认 Train/Dev Waveform Cache、Test 原始 WAV 在线处理；XLS-R 全部在线，训练 Worker 跨 Step 复用，验证每种子一个 Loader。正式配置和构建入口不接受隐藏状态缓存。方法计算、实验预算与原 Checkpoint 参数键保持不变。完整配置、构建/检查/基准命令及运行边界见 [docs/DATA_CACHE.md](docs/DATA_CACHE.md)，本机实施与验收见 [docs/CACHE_IMPLEMENTATION_REPORT.md](docs/CACHE_IMPLEMENTATION_REPORT.md)。
 
 ## 项目布局与运行入口
 
@@ -98,7 +98,7 @@ XLS-R 参数冻结、无梯度，调用 `model.train()` 后仍保持前端 eval�
 
 Dev/Test 都是 10-shot、种子 `[17,42,71,100,123]`。每个种子的 Real Support 在 32 个任务间共用。预先保存各种子 Support；Query 为各类全量样本排除五组 Support 并集后的剩余 ID。Manifest 只创建一次，复用时核对元数据指纹和划分完整性。
 
-所有 split 均复用官方随机裁剪函数。默认 Train 缓存完整预处理波形，裁剪/增强保持在线；Dev/Test 的裁剪在固定 mode/seed 的前端缓存生成时执行。逐样本 SHA-256 种子隔离 Python/NumPy/CPU Torch RNG，0/2/4/8 Worker 不改变同一 Step/View 的输入。训练 Loader 跨 Step 复用，默认持续 Worker；评估继续恢复训练 RNG 与模型模式。新固定 View 不宣称与旧运行逐样本裁剪位置相同，启用新管线必须使用新输出目录。
+所有 split 均复用官方随机裁剪函数。默认 Train/Dev 缓存完整 FP32 基础波形；Train 动态裁剪和增强，Dev 按原 mode/seed/uttid 确定性裁剪；Test 原始 WAV 在线执行相同基础处理与确定性裁剪。XLS-R 全部在线。逐样本 SHA-256 种子隔离 Python/NumPy/CPU Torch RNG，0/2/4/8 Worker 不改变同一 Step/View 的输入。训练 Loader 跨 Step 复用；评估每种子一个 Loader，将 330 条 Support 合并读取后按 uttid 恢复原分组，Real Query 只提取一次，Fake Query 逐类分批处理。两者默认持续 Worker，完整消费前禁止更新索引，结束或异常时显式关闭。合并读取不改变已有 View 种子或 Support 抽样，评估继续恢复训练 RNG 与模型模式。切换缓存模式仍需新输出目录。
 
 调度依据 `FS-LPRF_Codex_Training_Validation_Refactor_v1.0.md` 更新为：
 
@@ -110,17 +110,17 @@ Dev/Test 都是 10-shot、种子 `[17,42,71,100,123]`。每个种子的 Real Sup
 
 恢复需要原输出目录、配置、两个 Dev Manifest、节点和完整 Dev 历史。模型后端、Optimizer、Scheduler 与 RNG 一起恢复。节点已有但完整 Dev 完成标记/报告缺失时，会先补做验证再执行下一 Step。完成标记绑定节点和全部 5 份报告的 SHA-256；Best 从已完成历史重建。目录中有未来节点时拒绝倒退覆盖，请恢复最新节点；先前节点历史损坏则需恢复匹配的完整文件。中断最多丢失上一里程碑后未保存的 **799 Steps**，这是降低存盘频率的明确权衡。
 
-先按 [缓存流程](docs/DATA_CACHE.md) 显式构建并检查完整 Train Waveform 和 Light/Full Dev Feature Cache。训练缺失缓存时明确报错，不会静默生成或回退 WAV。
+先按 [缓存流程](docs/DATA_CACHE.md) 显式构建并检查完整 Train/Dev Waveform Cache。默认 Train=waveform、Dev=waveform、Test=none；运行时校验 Manifest、预处理 SHA、历史来源和分片，不再读取已删除的 Train/Dev WAV。缓存错误直接报错、不回退。删除前必须只读审计，并保留 Test、Manifest、标签、RIR、权重及缓存引用。
 
 ```bash
 python scripts/build_cache.py --config configs/speechfake.yaml --split train --mode waveform --dry-run
 python scripts/build_cache.py --config configs/speechfake.yaml --split train --mode waveform
-python scripts/build_cache.py --config configs/speechfake.yaml --split dev --mode xlsr_feature --validation-modes light,full
+python scripts/build_cache.py --config configs/speechfake.yaml --split dev --mode waveform
 python scripts/train.py --config configs/speechfake.yaml
 python scripts/train.py --config configs/speechfake.yaml --resume outputs/speechfake_fs_lprf/checkpoints/step_0800.pt
 # 完成训练和Dev选模后，才执行正式Test：
 python scripts/evaluate.py --config configs/speechfake.yaml --checkpoint best --shot 10
-# 也可明确指定最终 Best 节点路径，Feature Cache 模式会核对 Best 索引：
+# 也可明确指定最终 Best 节点路径：
 python scripts/evaluate.py --config configs/speechfake.yaml --checkpoint outputs/speechfake_fs_lprf/checkpoints/step_0800.pt --shot 10
 ```
 
@@ -136,6 +136,43 @@ python scripts/check_model.py --config configs/speechfake.yaml
 ```
 
 Pytest 使用合成向量和临时 WAV，覆盖梯度、损失聚合、一次更新、音频处理、五种子固定划分、0/2/4/8 Worker 输入一致性与持续进程、RNG 恢复、分片缓存完整性/续建、FP32/FP16、Test 隔离、合成原型库与 Checkpoint 往返，并保留全部原有测试。`check_model.py` 使用正式模型、已有权重和一条合成 4 秒 WAV，额外比较在线与缓存前端状态的 FP32/FP16 后端输出；仍核对冻结、全部可训练层梯度及后端 Checkpoint，不执行优化器更新。报告写入 `outputs/local_smoke/model_report.json`。本地实测记录见 [docs/LOCAL_VALIDATION.md](docs/LOCAL_VALIDATION.md)。
+
+## 本机 Real 音频基准
+
+只扫描实际存在的 Real 文件，独立的 Benchmark Dataset 继承正式 FADTrim；不初始化要求 32 Fake 类的 SpeechFakeDataset，不创建正式 manifest 或划分，也不加载 XLS-R。
+
+~~~powershell
+.\.venv\Scripts\python.exe scripts/benchmark_audio.py --audio-root D:/SpeechFake_Data/Real --limit 512 --rounds 3 --output-dir outputs/audio_benchmark_run1
+~~~
+
+默认均衡选取各来源共 512 个不同路径，遍历 0/2/4/8 Worker、persistent 开关、prefetch 2/4 和新建/复用策略。每组第 1 轮预热，后 2 轮计时，记录首批等待、迭代器启动、稳态等待、吞吐量、CPU 与采样 RSS。启动耗时是创建进程/迭代器的同步部分，首批等待另外包含导入、预处理及首次 IPC，不能把前者当成全部 Worker 就绪时间。
+
+各阶段诊断直接计时原 get_audio：文件字节读取单独测量，再以 BytesIO 交给同一个函数，区分 I/O 和内存解码；逐行计时有观测开销，不能将这些诊断值直接当作未经观测的吞吐量。临时 Waveform Cache 使用明确的 benchmark-only 分片格式，测试完整预处理波形、校验和与续建，测试结束删除；绝不冒充正式 Train/Dev Cache。
+
+结果仅写入 Git 忽略的 outputs；换一个 --output-dir 可重跑，脚本拒绝覆盖已有 results.json。这些数据只代表 Real 音频加载，不是完整 FS-LPRF 实验结果。Linux 可换用 python 运行同一入口；正式训练环境仍需重测 Worker、预取和线程数。
+
+## Train/Dev 纯缓存与原始 Test
+
+只使用 configs/speechfake.yaml，不创建第二套正式配置。保留原 Manifest 的原始路径字符串，不把 TSV 改成分片路径。构建时保存来源 SHA，正式读取校验历史来源和缓存内容，不再要求源 WAV 存在。
+
+~~~bash
+python scripts/build_cache.py --split train --mode waveform --check
+python scripts/build_cache.py --split dev --mode waveform --check
+python scripts/audit_waveform_sources.py --output-dir outputs/source_audit_run1
+# 只读审计不删除任何文件；用户核查后只手工处理合格的逐个 Train/Dev WAV。
+python scripts/check_data.py --cache-only --splits train dev
+python scripts/check_cache_runtime.py --splits train dev --batches 2 --with-model
+~~~
+
+Test 共享源、硬链接/符号链接、特殊随机读取样本和必要资源均不得直接删除。Train 的动态 RIR 仍需要独立 RIR 资源。输入/前向冒烟不更新优化器、不保存隐藏状态、不开 Test。
+
+新增基准调用正式 CacheWriter/CacheReader，仅使用临时 Real-only Manifest Fixture；原有 benchmark_audio.py 和测试保留：
+
+~~~powershell
+.\.venv\Scripts\python.exe scripts/benchmark_waveform_paths.py --audio-root D:/SpeechFake_Data/Real --limit 512 --rounds 3 --workers 0,2 --build-workers 0,2 --output-dir outputs/waveform_paths_run1
+~~~
+
+ASVspoof2019 LA、2021 DF、ASVspoof5 Track-1 Evaluation 将保留原始音频，复用独立基础处理；本次不实现 Phase-2 清单和评分协议。精确部署顺序与审计边界见 [docs/DATA_CACHE.md](docs/DATA_CACHE.md)。
 
 ## 0-shot 接口（本阶段仅合成测试）
 

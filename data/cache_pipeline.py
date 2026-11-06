@@ -9,8 +9,9 @@ import torch
 
 from .cache import CacheReader, CacheWriter, cache_path, make_cache_identity, source_digest
 from .evaluation_manifest import load_or_create_manifest, load_or_create_light_manifest
-from .loaders import audio_loader, worker_options
+from .loaders import audio_loader, worker_options, ReusableAudioLoader, PreprocessedWaveformDataset
 from .randomness import RNG_SCHEMA_VERSION, sample_seed
+from .waveform_cache import open_waveform_cache, publish_waveform_reference
 from .speechfake_dataset import SpeechFakeDataset
 from utils.seed import preserved_rng
 
@@ -61,11 +62,11 @@ def dev_manifests(dataset, cfg):
 
 def cache_specs(cfg, split, mode, *, validation_modes=("light", "full"), limit=None, seeds=None):
     if split not in ("train", "dev"):
-        raise ValueError("build_cache accepts Train/Dev only; Test caches belong to the final evaluate.py entry")
+        raise ValueError("build_cache accepts Train/Dev only; Test must read original WAVs")
     if limit is not None and limit <= 0:
         raise ValueError("--limit must be positive")
     dataset = SpeechFakeDataset(cfg["data"], split, train_mode=split == "train" and mode == "xlsr_feature")
-    if split == "train":
+    if split == "train" or mode == "waveform":
         ids = dataset.uttids if limit is None else dataset.uttids[:limit]
         identity = make_cache_identity(dataset, cfg, mode, seed=train_view_seed(cfg) if mode == "xlsr_feature" else None,
                                         uttids=ids, smoke=limit is not None)
@@ -97,16 +98,28 @@ def require_cache(cfg, identity, *, allow_smoke=False):
 def open_train_dataset(cfg):
     mode = cfg["data"]["train_cache_mode"]
     dataset = SpeechFakeDataset(cfg["data"], "train", train_mode=mode != "xlsr_feature")
-    if mode != "none":
-        identity = make_cache_identity(dataset, cfg, mode, seed=train_view_seed(cfg) if mode == "xlsr_feature" else None)
+    if mode == "waveform":
+        dataset.use_cache(open_waveform_cache(dataset, cfg), mode)
+    elif mode != "none":
+        identity = make_cache_identity(dataset, cfg, mode, seed=train_view_seed(cfg))
         dataset.use_cache(require_cache(cfg, identity), mode)
     return dataset
 
 
 def bind_evaluation_caches(dataset, cfg, manifests, *, build_missing=False, model=None):
     mode = cfg["data"][f"{dataset.split}_cache_mode"]
+    if dataset.split == "test":
+        if mode != "none" or getattr(dataset, "cache_mode", "none") != "none":
+            raise ValueError("Test must read original WAVs without any cache")
+        return []
     if mode == "none":
         return []
+    if mode == "waveform":
+        if dataset.split != "dev" or dataset.do_augment or build_missing:
+            raise ValueError("Dev Waveform Cache must be built explicitly without augmentation")
+        reader = open_waveform_cache(dataset, cfg)
+        dataset.use_cache(reader, "waveform")
+        return [reader]
     if dataset.split not in ("dev", "test") or dataset.do_augment:
         raise ValueError("Evaluation caches require unaugmented Dev/Test")
     if build_missing and dataset.split != "test":
@@ -126,6 +139,9 @@ def bind_evaluation_caches(dataset, cfg, manifests, *, build_missing=False, mode
 def evaluation_view(dataset, cfg, mode, seed):
     view = copy.copy(dataset)
     view.validation_mode = mode
+    if dataset.split == "test" and (
+            cfg["data"].get("test_cache_mode", "none") != "none" or getattr(dataset, "cache_mode", "none") != "none"):
+        raise ValueError("Test must read original WAVs without any cache")
     if cfg["data"].get(f"{dataset.split}_cache_mode", "none") == "xlsr_feature":
         try:
             reader = dataset.feature_caches[(mode, seed)]
@@ -138,7 +154,9 @@ def evaluation_view(dataset, cfg, mode, seed):
 
 def cache_bindings(train_dataset, dev_dataset):
     result = dict(rng_schema_version=RNG_SCHEMA_VERSION, train_mode=train_dataset.cache_mode)
-    readers = ([train_dataset.cache_reader] if train_dataset.cache_reader else []) + list(dev_dataset.feature_caches.values())
+    readers = ([train_dataset.cache_reader] if train_dataset.cache_reader else [])
+    readers += ([dev_dataset.cache_reader] if dev_dataset.cache_reader else [])
+    readers += list(dev_dataset.feature_caches.values())
     result["caches"] = [dict(fingerprint=reader.metadata["fingerprint"],
                              content_fingerprint=reader.metadata["content_fingerprint"],
                              schema_version=reader.identity["schema_version"], split=reader.identity["split"],
@@ -146,7 +164,7 @@ def cache_bindings(train_dataset, dev_dataset):
                              seed=reader.identity["seed"]) for reader in readers]
     if train_dataset.cache_mode == "none":
         result["train_source_sha256"] = source_digest(train_dataset, train_dataset.uttids)
-    if not dev_dataset.feature_caches:
+    if dev_dataset.cache_mode == "none" and not dev_dataset.feature_caches:
         result["dev_source_sha256"] = source_digest(dev_dataset, dev_dataset.uttids)
     return result, {reader.metadata["fingerprint"]: reader.metadata for reader in readers}
 
@@ -157,9 +175,12 @@ def _progress(done, total, elapsed):
 
 
 def build_dataset_cache(dataset, cfg, identity, *, model=None, resume=False, force=False, preparation_seconds=0):
+    if dataset.split == "test" or identity["split"] == "test":
+        raise ValueError("Test caches are forbidden; keep original Test WAVs")
     target = cache_path(cfg, identity)
     if target.exists() and not force:
-        return CacheReader(target, identity, verify_checksums=cfg["cache"]["verify_checksums"], allow_smoke=identity["smoke"])
+        reader = CacheReader(target, identity, verify_checksums=cfg["cache"]["verify_checksums"], allow_smoke=identity["smoke"])
+        return publish_waveform_reference(reader, cfg)
     if identity["mode"] == "xlsr_feature" and model is None:
         raise ValueError("Feature cache generation requires the frozen frontend model")
     if dataset.cache_mode != "none":
@@ -173,8 +194,15 @@ def build_dataset_cache(dataset, cfg, identity, *, model=None, resume=False, for
             writer.previous_seconds += preparation_seconds
             ids = identity["uttids"][len(writer.index):]
             if identity["mode"] == "waveform":
-                for uid in ids:
-                    writer.add(uid, dataset.load_preprocessed_waveform(uid))
+                waveforms = PreprocessedWaveformDataset(dataset)
+                indices = [dataset.uttid2idx[uid] for uid in ids]
+                # Workers preprocess; only the parent commits and resumes shards.
+                with ReusableAudioLoader(waveforms, cfg, training=False,
+                                         batch_size=min(cfg["train"]["audio_microbatch_size"],
+                                                        cfg["cache"]["shard_size"])) as loader:
+                    for batch in loader.for_indices(indices):
+                        for uid, waveform in batch:
+                            writer.add(uid, waveform)
             else:
                 model.eval()
                 tokens = view_tokens(dataset, ids, identity["seed"], identity["validation_mode"] or "train")
@@ -185,7 +213,7 @@ def build_dataset_cache(dataset, cfg, identity, *, model=None, resume=False, for
                         states = model.extract_frontend_features(batch["feats"], to_cpu=True)
                         for uid, features in zip(batch["uttids"], states):
                             writer.add(uid, features)
-            return writer.finish()
+            return publish_waveform_reference(writer.finish(), cfg)
     finally:
         if model is not None:
             model.train(was_training)
@@ -219,31 +247,5 @@ def estimate_cache(dataset, cfg, identity, model=None):
 
 
 def prepare_final_test_caches(dataset, cfg, manifest, path, model, *, dry_run=False, confirm_large_cache=False):
-    """Called only by evaluate.py after it resolves and loads the selected Best."""
-    if dataset.split != "test":
-        raise ValueError("Final Test cache preparation requires Test")
-    started = time.perf_counter()
-    identities = evaluation_identities(dataset, cfg, manifest, path, "full")
-    missing = [identity for identity in identities if not cache_path(cfg, identity).exists()]
-    missing_seeds = {identity["seed"] for identity in missing}
-    estimates = [estimate_cache(dataset, cfg, identity, model) for identity in missing]
-    total = sum(row["bytes"] for row in estimates)
-    report = dict(new_cache_estimated_bytes=total, estimates=estimates, dry_run=dry_run)
-    if dry_run:
-        return report
-    if total / 2**30 > cfg["cache"]["warn_if_estimated_gb_above"] and not confirm_large_cache:
-        raise ValueError("Test cache estimate exceeds disk threshold; run --cache-dry-run, then explicitly "
-                         "use --confirm-large-cache after reviewing space")
-    preparation = time.perf_counter() - started
-    readers = []
-    for identity in identities:
-        if identity["seed"] in missing_seeds:
-            reader = build_dataset_cache(dataset, cfg, identity, model=model, preparation_seconds=preparation)
-            preparation = 0
-        else:
-            reader = require_cache(cfg, identity)
-        dataset.feature_caches[("full", identity["seed"])] = reader
-        readers.append(reader)
-    report.update(cache_seconds=time.perf_counter() - started, caches=[reader.stats() for reader in readers],
-                  note="First Test includes frontend cache creation; repeated-read speed is not first-run speed")
-    return report
+    """Compatibility guard: final Test is always the original online WAV path."""
+    raise ValueError("Test caches are forbidden; keep original WAVs and use data.test_cache_mode=none")

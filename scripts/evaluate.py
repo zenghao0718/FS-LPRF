@@ -16,29 +16,19 @@ def main():
     parser.add_argument("--checkpoint", required=True,
                         help="Explicit node checkpoint path, or 'best' from the configured output directory")
     parser.add_argument("--shot", type=int, default=10, choices=[10])
-    parser.add_argument("--cache-dry-run", action="store_true", help="After Best selection, estimate Test cache only; no Test metrics")
+    parser.add_argument("--cache-dry-run", action="store_true", help="Retired flag: Test caches are forbidden")
     parser.add_argument("--confirm-large-cache", action="store_true")
     args = parser.parse_args()
     cfg = load_config(args.config, args.set)
+    if cfg["data"]["test_cache_mode"] != "none" or args.cache_dry_run or args.confirm_large_cache:
+        raise ValueError("Test always uses original WAVs; Test cache modes and cache flags are forbidden")
     checkpoint = resolve_checkpoint(args.checkpoint, cfg["runtime"]["output_dir"])
-    if cfg["data"]["test_cache_mode"] == "xlsr_feature":
-        best = resolve_checkpoint("best", cfg["runtime"]["output_dir"])
-        if checkpoint != best:
-            raise ValueError("Final cached Test requires the already selected Best checkpoint")
     ds = SpeechFakeDataset(cfg["data"], "test")
     out = Path(cfg["runtime"]["output_dir"]) / "evaluation"
     manifest = load_or_create_manifest(ds, out / "test_episode_manifest.json", args.shot, cfg["test"]["seeds"])
     model = FSLPRF(cfg)
     load_checkpoint(checkpoint, model)
     cache_report = None
-    if cfg["data"]["test_cache_mode"] == "xlsr_feature":
-        cache_report = prepare_final_test_caches(ds, cfg, manifest, out / "test_episode_manifest.json", model,
-                                 dry_run=args.cache_dry_run, confirm_large_cache=args.confirm_large_cache)
-        if args.cache_dry_run:
-            print(json.dumps(cache_report, indent=2))
-            return
-    elif args.cache_dry_run:
-        raise ValueError("--cache-dry-run requires data.test_cache_mode=xlsr_feature")
     started = time.perf_counter()
     result = evaluate(model, ds, manifest, cfg, out, "test")
     evaluation_seconds = time.perf_counter() - started

@@ -72,14 +72,20 @@ def source_digest(dataset, uttids):
 
 
 def make_cache_identity(dataset, cfg, mode, *, validation_mode=None, seed=None,
-                        manifest=None, manifest_path=None, uttids=None, smoke=False):
-    if mode not in ("waveform", "xlsr_feature") or (mode == "waveform" and dataset.split != "train"):
-        raise ValueError("Waveform caches are Train-only; feature caches require an explicit split/view")
+                        manifest=None, manifest_path=None, uttids=None, smoke=False, recorded_source_sha256=None):
+    if dataset.split == "test":
+        raise ValueError("Test always uses original WAVs; Test caches are forbidden")
+    if mode not in ("waveform", "xlsr_feature") or dataset.split not in ("train", "dev"):
+        raise ValueError("Caches are restricted to SpeechFake Train/Dev")
     ids = list(dataset.uttids if uttids is None else uttids)
     if not ids or len(ids) != len(set(ids)) or not set(ids) <= set(dataset.uttids):
         raise ValueError("Cache uttids must be a nonempty, unique dataset subset")
     if mode == "waveform" and any("st" in dataset.uttid2info[uid] or "dur" in dataset.uttid2info[uid] for uid in ids):
         raise ValueError("Full Waveform Cache cannot freeze the optional random st/dur file-read branch; use none")
+    if recorded_source_sha256 is not None and (
+            mode != "waveform" or not isinstance(recorded_source_sha256, str) or
+            not re.fullmatch(r"[0-9a-f]{64}", recorded_source_sha256)):
+        raise ValueError("Runtime waveform identity requires a recorded source SHA-256")
     root = Path(cfg["data"]["data_path"])
     preprocessing = dict(PREPROCESSING, trim_silence=cfg["data"]["trim_silence"],
                          implementation_sha256=file_sha(Path(__file__).with_name("audio.py")))
@@ -87,7 +93,8 @@ def make_cache_identity(dataset, cfg, mode, *, validation_mode=None, seed=None,
                     validation_mode=validation_mode, seed=seed, uttids=ids, smoke=bool(smoke),
                     dataset_fingerprint=dataset_fingerprint(dataset),
                     manifest_sha256={suffix: file_sha(root / f"{dataset.split}.{suffix}") for suffix in ("tsv", "txt")},
-                    source_audio_sha256=source_digest(dataset, ids), preprocessing=preprocessing,
+                    source_audio_sha256=(source_digest(dataset, ids) if recorded_source_sha256 is None
+                                         else recorded_source_sha256), preprocessing=preprocessing,
                     rng_schema_version=RNG_SCHEMA_VERSION,
                     dtype="float32" if mode == "waveform" else cfg["cache"]["feature_dtype"])
     if mode == "xlsr_feature":
@@ -155,7 +162,7 @@ class CacheReader:
             if not required.issubset(self.identity) or self.identity["split"] not in ("train", "dev", "test"):
                 raise ValueError("Invalid cache identity schema")
             if self.identity["mode"] not in ("waveform", "xlsr_feature") or (
-                    self.identity["mode"] == "waveform" and self.identity["split"] != "train"):
+                    self.identity["mode"] == "waveform" and self.identity["split"] not in ("train", "dev")):
                 raise ValueError("Invalid cache split/mode")
             if not isinstance(self.identity["uttids"], list) or not self.identity["uttids"]:
                 raise ValueError("Cache identity requires nonempty ordered uttids")
@@ -254,6 +261,16 @@ class CacheReader:
                 raise ValueError(f"Cache contains NaN/Inf: {uid}")
         self._maps.clear()
         return self.stats()
+
+    def close(self):
+        """Release current file mappings; later get() can reopen them lazily."""
+        self._maps.clear()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
 
     def stats(self):
         return dict(path=str(self.path), samples=len(self.rows), dtype=self.identity["dtype"],

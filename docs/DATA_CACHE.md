@@ -1,143 +1,127 @@
-# 数据缓存与 DataLoader 管线
+# Train/Dev Waveform Cache 与原始 Test
 
-按《FS-LPRF 数据缓存与 DataLoader 加速 Codex 实施规范 v1.0》实现。属于工程优化，Episode、Loss、优化器、4000 Step、15 次 Light / 5 次 Full Dev、Full-only Best 和后端 Checkpoint 参数键保持原样。以下正式命令由用户在 AutoDL 执行，本机不运行真实训练、完整 Dev/Test 或原型库。
+当前正式默认值为 Train=waveform、Dev=waveform、Test=none。历史报告保留，历史默认值不作为当前配置依据。模型、25 层在线提取、Episode、优化器、4000 Steps、200/800 验证、五种子、指标和 Best 均不变。
 
-## 默认模式与边界
+## 数据流
 
-- Train 默认 `data.train_cache_mode: waveform`：缓存完整基础预处理 `[1,L]` float32 波形；每次取样仍调用原来的 `FADTrim.sample_segment()`，再动态执行 RIR 1/3 与 RawBoost Algorithm 5 1/5，独立抽样、先 RIR 后 RawBoost。Support/Query 均如此。增强后不新增归一化，模型输入仍严格为有限的 `[1,64000]`。
-- Dev 默认 `data.dev_cache_mode: xlsr_feature`：分别保存 Light seed42、Full seeds17/42/71/100/123 的完整前端状态；Support/Query 均无增强。每个模式/种子有独立身份，同一身份供所有 Checkpoint 复用。
-- Test 默认 `data.test_cache_mode: xlsr_feature`：只有最终 `evaluate.py` 解析并加载已选出的 Best 后才能规划、创建或读取。训练只打开 Train/Dev，普通缓存构建命令拒绝 Test。首次 Test 仍需生成缓存，不承诺降低首次评测总时间。
-- `none` 保留原始 WAV、基础预处理、裁剪、增强及在线 XLS-R 路径。对照时将 Train/Dev 设置为 `none`，Test 也可单独设为 `none`。
-- Train 可选 `xlsr_feature`：每条 uttid 只预生成一个固定种子裁剪/增强 View，随后重复使用，训练不再裁剪、增强或运行 XLS-R。Episode 仍动态抽样。它牺牲在线随机性，不与 Waveform 方案宣称等价，不能作为默认。
+- Train：原始 WAV → 原基础处理 → 完整 FP32 Waveform Cache → 原动态 64000 点裁剪 → RIR p=1/3 → RawBoost Algorithm 5 p=1/5 → 在线 XLS-R → FS-LPRF。
+- Dev：原始 WAV → 同一基础处理 → 完整 FP32 Waveform Cache → 原 mode/seed/uttid 确定性裁剪 → 在线 XLS-R → 原验证；不增强。
+- Test：保留原始 WAV → 运行时同一基础处理 → 原确定性裁剪 → 在线 XLS-R → 原指标；不使用任何 Cache。
+- 未来 ASVspoof2019 LA、2021 DF、ASVspoof5 Track-1 Evaluation：原始音频在线处理，Phase-2 数据与评分适配另行实现。
 
-缓存特征位于 Attention **之前**，每条为 `[25,T,1024]`：第 0 组为 `post_features`，之后严格对应 `layer_results[0..23][0]`。T 来自实际前端输出，不写死。读取 FP16 时在 Attention 前转回 FP32；25 组独立 Attention 和共享 Bottleneck 继续训练，前端保持冻结/eval。缓存从不保存 Attention/Bottleneck 输出、原型、α 或 logits。
+基础处理仍调用 data/audio.py 的 get_audio 和 FADTrim.load_preprocessed_waveform；读取/解码、16 kHz 重采样、首声道、静音裁剪、-20 dB RMS/限幅的顺序与参数未改。固定裁剪、增强和 XLS-R 隐藏状态不进入 Cache。
 
-`data/audio.py` 只抽出基础读取入口，SoundFile、重采样、首声道、原 trim 参数、-20 dB RMS、幅值裁剪和空音频错误处理不变。通用 `st/dur` 随机文件片段读取分支仍保留在原流程；完整波形缓存遇到这类记录会拒绝构建，提示使用 `none`，不会把随机片段冒充完整波形。当前 SpeechFake TSV/TXT 不含这些字段。
+## 唯一配置与构建
 
-0-shot 库只允许在 Best 后使用无增强 Train。构建脚本直接读取原始 WAV；即使 Train 设置为 `xlsr_feature`，也绝不复用它的增强 View。库函数会明确拒绝 Train Feature Cache 输入，不使用 Dev/Test。
+只修改 configs/speechfake.yaml 的资源路径和新输出目录，不另建正式 YAML：
 
-## 配置与新实验目录
-
-保留原数据、RIR 和权重路径。AutoDL 建议缓存根目录 `/root/autodl-tmp/fs_lprf_cache/`，正式实验使用新的输出目录，例如 `/root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1`。旧输出与 Checkpoint 不迁移、不覆盖、不混合续训。本机默认 `cache/fs_lprf/` 已被 Git 忽略；项目内缓存根目录限于已忽略的缓存/输出目录，外部绝对路径也可用。
-
-```yaml
+~~~yaml
 data:
   train_cache_mode: waveform
-  dev_cache_mode: xlsr_feature
-  test_cache_mode: xlsr_feature
-cache:
-  root: /root/autodl-tmp/fs_lprf_cache
-  schema_version: 1
-  feature_dtype: float32
-  feature_build_batch_size: 8
-  shard_size: 64
-  verify_checksums: true
-  train_feature_seed: null
-  warn_if_estimated_gb_above: 100
+  dev_cache_mode: waveform
+  test_cache_mode: none
 runtime:
   train_num_workers: 4
   eval_num_workers: 2
   persistent_train_workers: true
+  persistent_eval_workers: true
   prefetch_factor: 2
   pin_memory: true
   worker_torch_num_threads: 1
-```
+~~~
 
-这是附加配置示意，不能用来覆盖完整实验 YAML。Train feature seed 为 null 时使用 `train.seed`。`feature_build_batch_size` 独立于训练 `audio_microbatch_size=32`。`runtime.num_workers` 旧字段仍兼容，但会发弃用提示，并作为兼容覆盖值同时作用于 Train/Eval；使用新配置时删除该旧字段，再分别设置两个 Worker 数。
+正式配置/构建 CLI 禁止 xlsr_feature；历史低层类型与合成测试保留。Waveform 始终 FP32，不受 feature_dtype 影响。显式 none 只用于源文件仍在时的输入对照，不是缓存错误的回退。
 
-DataLoader Worker 是多进程。训练启动只建一个 Loader，主进程在完整消费当步后更新 Sampler；持续 Worker 跨 Step 存活，结束或异常时关闭。零 Worker 不传预取参数、不启用持续进程。pin memory 可配置，GPU 传输保留 `non_blocking=True`。Feature Cache 每条记录很大，优先实测较小的预取值（如 1）和 Worker 数，不要凭默认值假定 RAM 足够。
+~~~bash
+python scripts/build_cache.py --split train --mode waveform --dry-run
+python scripts/build_cache.py --split dev --mode waveform --dry-run
+python scripts/build_cache.py --split train --mode waveform
+python scripts/build_cache.py --split dev --mode waveform
+python scripts/build_cache.py --split train --mode waveform --check
+python scripts/build_cache.py --split dev --mode waveform --check
+~~~
 
-Worker 线程上限在子进程启动前通过 OMP/MKL/OpenBLAS 环境传入，初始化函数再调用 `torch.set_num_threads`；仅等到初始化函数才限制，无法约束 Windows spawn 的导入阶段。父进程环境在启动后或异常时立即恢复，不需要用户全局设置。OMP/MKL 变量语义见 [PyTorch 官方线程环境说明](https://docs.pytorch.org/docs/stable/threading_environment_variables.html)，实际兼容性在项目 2.7.1 环境中测试。
+构建/估算需要源 WAV，检查和正式读取不需要。Dev 基础波形只存一份，不按 Light/Full 或 seed 复制；不要传 --seeds。--limit 是 smoke 身份，不能用于正式运行或全量删除依据。--resume 续建，--force 保留旧缓存并占额外空间。
 
-## 构建、估算与检查
+Worker 沿用 eval_num_workers/prefetch/线程配置，只预处理；主进程统一顺序写原 CacheWriter，保留分片、SHA、完整性和续建。CacheReader 按需映射有限分片并返回 Tensor 副本，close()/上下文管理释放当前映射，便于 Windows 临时目录清理。
 
-以下示例沿用 `configs/speechfake.autodl.yaml`，环境先按 [AUTODL.md](AUTODL.md) 检查并复用 base 中已满足的 PyTorch。
+## 无原始 WAV 的身份验证
 
-```bash
-python scripts/check_data.py --config configs/speechfake.autodl.yaml --splits train dev
-python scripts/check_model.py --config configs/speechfake.autodl.yaml
+构建记录 split、Manifest SHA、全部有序 uttid、标签/元数据指纹、来源 SHA、原预处理参数和 audio.py SHA、Cache/RNG Schema、dtype 与分片校验。完整验证后发布 cache.root/<split>/waveform/references/ 下的绑定引用，只指向已完成缓存。
 
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml \
-  --split train --mode waveform --dry-run
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml \
-  --split train --mode waveform --limit 1000
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml \
-  --split train --mode waveform --limit 1000 --check
+运行时从当前 Manifest/处理实现生成不读 WAV 的绑定，读取 Metadata 中历史来源 SHA，再验证内容/身份指纹、ID/标签、Schema、索引、shape/dtype/offset、分片大小和配置要求的 SHA；逐条拒绝 NaN/Inf。不调用 source_digest 读取已删除的原始 Train/Dev。
 
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml \
-  --split dev --mode xlsr_feature --validation-modes light,full --limit 100 --seeds 42 --dry-run
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml \
-  --split dev --mode xlsr_feature --validation-modes light,full --limit 100 --seeds 42
-```
+原 Manifest 与路径字符串必须保留，不应把 TSV 改成缓存路径。缓存缺失、损坏、清单或预处理变化直接报错，绝不回退 WAV。Train/Dev Cache、references、Manifest、标签、RIR 和权重均必须保留。
 
-`--limit` 总是标记 smoke/incomplete，身份与完整缓存不同，禁止正式训练/评估使用。少量样本检查通过后，去掉 `--limit` 与 `--seeds` 构建完整缓存：
+旧 Train Cache 的格式、schema 和 audio.py 未变，匹配来源时无需重做基础预处理；显式构建会复用并发布引用。旧缓存无引用时只接受唯一匹配版本，多版本拒绝猜测。Dev 需新建 Waveform Cache。切换 Dev 缓存模式应使用新 output_dir，不混续旧正式运行；Worker 性能调整仍不改变 Run Identity。
 
-```bash
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml \
-  --split dev --mode xlsr_feature --validation-modes light,full --dry-run
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml \
-  --split dev --mode xlsr_feature --validation-modes light,full
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform --check
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml \
-  --split dev --mode xlsr_feature --validation-modes light,full --check
-```
+## 只读删除安全审计
 
-Waveform 估算是重采样后、trim 前的上界；Feature 估算用现有前端的一条合成固定长度输入测得 T，不生成正式特征。估算不含 JSON/文件系统开销。超过阈值会警告，正式生成需交互确认或显式 `--confirm-large-cache`。构建打印进度、吞吐量和 ETA，结束报告大小、样本数、dtype、fingerprint、生成时间并校验所有记录。一次性准备/模型加载开销计入首个新缓存的构建时间；重用已有缓存不会伪造一次新的构建时间。
+~~~bash
+python scripts/audit_waveform_sources.py --output-dir outputs/source_audit_run1
+~~~
 
-中断使用相同配置与参数加 `--resume`。只续用身份和 SHA 匹配的已完成分片；未完成临时记录不视为可用。`--force` 显式重新生成时保留原完整缓存及原临时目录为 `.preserved-*`，不删除用户旧缓存；保留副本也占磁盘空间。
+输出 audit.json、deletable_wav.csv、retained_files.csv，拒绝覆盖已有报告。实现不包含删除或移动原始数据的操作。
 
-## 存储与身份校验
+删除建议的前提是两个完整缓存全量校验、数量/ID/标签一致，当前原始 Train/Dev SHA 与构建历史一致，Test 源文件存在且非空。仅有 smoke/subset Cache 不够。任何校验失败、缺失、来源变化会阻止建议删除。
 
-存储使用分片二进制 + JSON 索引与 metadata，按需 memmap 读取；不为每条音频创建 `.pt`，不把整个 Train/特征 split 载入内存或 GPU。Feature 生成按独立小批次提取，并逐层复制到 CPU，避免额外构建整块 GPU 堆叠副本。分片内每条记录存 uttid、字节 offset、shape、length、dtype。
+必须保留全部 Test 源文件、Test 共享的物理文件/别名，六份 Manifest、标签、缓存/引用、RIR、权重。硬链接/符号链接、非 WAV 和特殊 st/dur 随机文件片段逻辑均保留并报告。原完整波形缓存拒绝特殊随机读取，不跳过样本或冻结随机片段。
 
-身份包含 schema、split/mode/validation mode/seed、完整有序 uttid、两份数据 Manifest SHA、元数据指纹、源音频内容 SHA、基础预处理及实现 SHA、RNG schema。Train feature 还绑定 View seed、RIR 内容及原 RawBoost 参数/实现；Feature 必须绑定实际 XLS-R 文件 SHA 和完整 25 层顺序。Waveform 不绑定前端权重。metadata 保存实际 shape、分片长度/记录数/SHA、完成标记与构建时间。
+只输出 Manifest 引用的逐个 WAV，不建议删除整个数据集根目录。空间是唯一文件逻辑大小估计，不保证等于实际文件系统回收量。
 
-只有校验完成后才原子发布缓存目录；OS 文件锁阻止同一目标的并发构建。恢复快照以单文件原子写入，避免索引/metadata 写入间中断破坏已完成分片的续建。读取校验身份、索引 SHA、顺序、去重、offset、dtype、shape、文件长度与配置要求的分片 SHA，记录读取再次拒绝 NaN/Inf。错误一律终止，不回退 WAV 或混用缓存。
+## 删除后的检查
 
-源音频与分片内容哈希在同一进程内按文件状态复用，避免逐个基准场景重复读盘；状态变化会重新计算。Dataset 的审计 memo 不随 Dataset 序列化到 Worker。新进程的首次完整内容审计需要读取源文件，属于一次性准备成本，不是训练 Step 时间。身份 fingerprint 与分片内容 fingerprint 都进入训练 Run Identity，`cache_bindings.json` 和 `cache_metadata/*.json` 保存到训练输出供追溯。
+~~~bash
+python scripts/build_cache.py --split train --mode waveform --check
+python scripts/build_cache.py --split dev --mode waveform --check
+python scripts/check_data.py --cache-only --splits train dev --read-samples 8
+python scripts/check_cache_runtime.py --splits train dev --batches 2 --with-model
+python scripts/train.py --config configs/speechfake.yaml
+~~~
 
-## RNG 与恢复
+check_cache_runtime 只检验输入/可选在线前向，无优化器更新、不保存状态、不开 Test。Train 动态增强仍读必须保留的 RIR WAV。原型库脚本也可读无增强 Train Cache，不依赖已删除的 Train WAV；原型、配额与决策未改。
 
-训练样本种子以 SHA-256 派生，包含 RNG schema、全局 Train seed、Step、展平位置和 uttid。同一音频在不同位置或 Step 获得不同种子。样本处理前保存 Python/NumPy/CPU Torch 状态，裁剪/增强后恢复；Worker 不操作 CUDA RNG。零 Worker 同样隔离主进程状态，EpisodeSampler 继续使用原主进程 `random` 状态。
+原始音频对照基准、构建及删除前来源审计仍明确需要原始文件；删除后不能做 Raw 对照。check_data 的 --cache-only 明确检查 Train/Dev；普通模式仍用于删除前原始数据检查。
 
-Dev/Test View 种子包含 split、validation mode、seed、uttid 和 RNG schema，继续调用原裁剪函数。不同 Worker 数不会改变同一 View；Light/Full 是不同身份。建立的是新的固定裁剪视图，不保证与旧运行逐条裁剪位置相同，因此正式实验必须用新目录。
+最终 Dev 选定 Best 后：
 
-Run Identity 纳入缓存内容、schema、模式、训练数据与两个 Dev SHA，排除设备 ordinal、Worker 数、持续进程、预取、pin memory 和 Worker Torch 线程这些性能设置。0/2/4/8 Worker 一致性通过后，允许恢复时调整这些性能项。仍保留原 Checkpoint 的主进程 RNG、Optimizer/Scheduler 与 Best 历史恢复；缓存内容或 RNG schema 改变时拒绝恢复。旧版输入管线的 Run Identity 不可混入新运行。
+~~~bash
+python scripts/evaluate.py --checkpoint best --shot 10
+~~~
 
-## AutoDL 性能对照
+Test 不构建/读取/估算缓存，旧 --cache-dry-run/--confirm-large-cache 参数会拒绝。Test 原始 WAV 缺失/解码失败按原逻辑报 split、uttid、path，不替换样本，不跳过基础处理，不增强。
 
-完整三种模式对照需要分别具备完整 Waveform 和 Train Feature Cache。Train feature 的小样本检查：
+## Loader、RNG 与外部接口
 
-```bash
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode xlsr_feature --limit 1000
-# 检查后再去掉 limit 构建完整可用于基准的特征缓存
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode xlsr_feature --dry-run
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode xlsr_feature
+保留训练跨 Step 复用、每种子一个评估 Loader、330 Support 合并并按 ID 恢复、Real Query 共享和 Fake Query 分批。原 train/step/position/uttid 与 view/split/mode/seed/uttid 种子不变。完整消费才允许换索引，提前退出和异常关闭 Worker。内存/显存不因 Query 一次性堆积而增加。
 
-python scripts/benchmark_pipeline.py --config configs/speechfake.autodl.yaml \
-  --modes none,waveform,xlsr_feature --workers 0,2,4,8 --warmup 5 --steps 20
-# 显式进行真实 Dev 计时；可耗时较长，只在 AutoDL 决定后运行
-python scripts/benchmark_pipeline.py --config configs/speechfake.autodl.yaml --dev-only
-# 也可一次完成训练管线与 Dev 计时
-python scripts/benchmark_pipeline.py --config configs/speechfake.autodl.yaml --include-dev
-```
+get_audio 不依赖 SpeechFake Manifest/32 类，FADTrim 和通用 Loader 可复用。32 Fake 限制保留在 SpeechFakeDataset。SpeechFake evaluate 仍是其 33 类 K-shot 适配器，外部 ASVspoof 需要自己的数据/评分入口，本次不更改模型推理与 Phase-2 协议。上游非 16k 多声道的 NotImplemented 分支保持原样，不宣称覆盖所有格式。
 
-基准使用临时模型/Optimizer 状态、相同预生成 Episode 和相同后端初值，每 Step 保持 8 Episode / 240 音频、相同微批次。结果写入独立 UUID 目录的 JSON/CSV，不写正式 Checkpoint、TensorBoard 或训练日志。GPU 阶段以 CUDA events 计时，Step 墙钟前后同步；CPU 数据等待单独计时。记录构建时间/空间、samples/s、mean/P50/P90 Step、前端、Attention/Bottleneck、反向更新、显存、dtype/fingerprint 及 Worker 配置。AutoDL Linux 还采样主进程+Worker RSS 与 CPU；RSS 为各进程求和，含共享页，属于观测值而非独占内存；Windows 未采集项明确为 null。
+## 本机验收
 
-Dev 单列 Light 缓存生成、Full 五种子缓存生成、缓存后两档耗时及总空间。缺少真实 Dev 计时时总耗时为 null，不代入外部“约三小时”。完整结果计算 `T_cache + 4000*T_step + 15*T_light + 5*T_full`；Test 不计入训练期间的重复收益，单独记录首次缓存及最终评测。可通过 `--dev-timings <先前 benchmark.json>` 复用同条件测量。
+~~~powershell
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe scripts/benchmark_waveform_paths.py --audio-root D:/SpeechFake_Data/Real --limit 512 --rounds 3 --workers 0,2 --build-workers 0,2 --output-dir outputs/waveform_paths_run1
+~~~
 
-最终按总实验时间、空间、指标与稳定性选择，默认保持 Waveform。若决定 Train feature 对照，显式设置 `data.train_cache_mode=xlsr_feature`，使用独立新 `output_dir`；Baseline 设置 Train/Dev 为 `none`，同样用独立目录。不同方案不能混合续训。
+Real-only 临时清单 Fixture 不创建 Fake 类/正式划分，不加载模型、不报告分类指标；移走验证只操作自有副本。旧 benchmark_audio.py 保留。每组 1 轮预热、2 轮计时；输入吞吐不能等同正式训练吞吐。Windows spawn、实际磁盘、增强和完整模型需在 AutoDL 重测。
 
-## 正式运行和最终 Test
+## AutoDL 执行顺序
 
-```bash
-python scripts/train.py --config configs/speechfake.autodl.yaml
-# 全部训练与 Dev 选模完成后，才检查或构建 Test 缓存
-python scripts/evaluate.py --config configs/speechfake.autodl.yaml --checkpoint best --shot 10 --cache-dry-run
-python scripts/evaluate.py --config configs/speechfake.autodl.yaml --checkpoint best --shot 10
-```
+本机确认并另行提交/推送后才可拉取本次代码；本任务不执行 push/AutoDL 操作。
+1. 拉取已经确认的代码，保留旧输出。
+2. 下载并解压完整 SpeechFake-BD，保持原 split。
+3. 配置唯一 YAML，检查 Train/Dev/Test TSV/TXT、标签、类别、容量、路径。
+4. 单独检查 Test 原始文件：python scripts/check_data.py --splits test --read-samples 8。
+5. 分别 Train/Dev Waveform --dry-run。
+6. 用 df -h /root/autodl-tmp 检查 1TB 数据盘实际余量，确保源数据、两个 Cache、Test、资源与构建余量可同时容纳。
+7. 构建完整 Train Cache，不带 --limit。
+8. 构建完整 Dev Cache，不带 --limit。
+9. 分别 --check 全量完整性。
+10. 运行只读删除审计并核查 JSON、两份 CSV。
+11. 用户确认后手工处理合格的逐个 Train/Dev WAV，不删根目录。
+12. 保留全部 Test WAV、Manifest、标签、Cache/references、RIR、权重和运行历史。
+13. 执行 cache-only 数据检查及 --with-model 在线前向冒烟。
+14. 开始原正式训练；仅 Full Dev 选 Best，最终 Test 仍读原始 WAV。
 
-Test 空间超过阈值时，在确认空间后加 `--confirm-large-cache`。普通 `build_cache.py` 没有 `--split test`。Test 缓存生成只运行冻结前端，不计算或打印指标；随后最终评估才计算原报告，`test_run.json` 将首次缓存耗时/空间与评估结果分开记录。`--checkpoint` 使用显式路径时，Feature Cache 模式要求它与已验证的 Best 索引一致。
-
-本机验收与未验证事项见 [CACHE_IMPLEMENTATION_REPORT.md](CACHE_IMPLEMENTATION_REPORT.md)。真实数据吞吐量、完整 Dev 空间/指标及 AutoDL 总实验收益均需实际测量。
+完整数据、完整指标和长时资源表现均留待正式环境，不能用本机 Real 输入结果代替。

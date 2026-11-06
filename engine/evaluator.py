@@ -1,10 +1,11 @@
 import csv
+from contextlib import nullcontext
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import time
 import numpy as np
 import torch
-from data.loaders import audio_loader, worker_options
+from data.loaders import ReusableAudioLoader
 from data.cache_pipeline import evaluation_view, view_tokens
 from models.fs_lprf_model import forward_batch
 from methods.inference import kshot_task, kshot_scores, predict
@@ -13,17 +14,43 @@ from utils.logging import write_csv
 from utils.seed import seed_all, preserved_rng
 
 
-def feature_batches(model, dataset, ids, cfg, seed):
+def feature_batches(model, dataset, ids, cfg, seed, *, loader=None):
     indices = view_tokens(dataset, ids, seed, getattr(dataset, "validation_mode", "full"))
-    loader = audio_loader(dataset, indices, cfg["train"]["audio_microbatch_size"],
-                          seed, **worker_options(cfg))
-    for batch in loader:
-        yield batch["uttids"], forward_batch(model, batch)
+    if loader is not None and (loader.dataset is not dataset or loader.seed != seed):
+        raise ValueError("Reusable evaluation loader must belong to this dataset view and seed")
+    owner = nullcontext(loader) if loader is not None else ReusableAudioLoader(
+        dataset, cfg, training=False, seed=seed)
+    with owner as reusable:
+        stream = reusable.for_indices(indices)
+        try:
+            for batch in stream:
+                yield batch["uttids"], forward_batch(model, batch)
+        finally:
+            stream.close()
 
 
-def extract_features(model, dataset, ids, cfg, seed):
+def extract_features(model, dataset, ids, cfg, seed, *, loader=None):
     # Support only (or one class during offline bank construction), kept off GPU.
-    return torch.cat([features.cpu() for _, features in feature_batches(model, dataset, ids, cfg, seed)])
+    return torch.cat([features.cpu() for _, features in
+                      feature_batches(model, dataset, ids, cfg, seed, loader=loader)])
+
+
+def extract_support_features(model, dataset, supports, cfg, seed, *, loader):
+    """Encode saved Support IDs together, then restore their class/ID order."""
+    classes = ["real"] + dataset.fake_classes
+    ids = [uid for name in classes for uid in supports[name]]
+    if len(ids) != len(set(ids)):
+        raise ValueError("Merged Support requires unique uttids across classes")
+    by_id = {}
+    actual_ids = []
+    for batch_ids, features in feature_batches(model, dataset, ids, cfg, seed, loader=loader):
+        if len(batch_ids) != len(features):
+            raise ValueError("Support IDs and features have different batch lengths")
+        actual_ids.extend(batch_ids)
+        by_id.update(zip(batch_ids, features.cpu()))
+    if actual_ids != ids:
+        raise ValueError("Merged Support loader lost, duplicated or reordered uttids")
+    return {name: torch.stack([by_id[uid] for uid in supports[name]]) for name in classes}
 
 
 def _log(logger, message, *args):
@@ -98,6 +125,9 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
     """
     if dataset.do_augment:
         raise ValueError("Evaluation must not augment audio")
+    if split == "test" and (
+            cfg["data"].get("test_cache_mode", "none") != "none" or getattr(dataset, "cache_mode", "none") != "none"):
+        raise ValueError("Test must read original WAVs without any cache")
     if mode is not None:
         if split != "dev":
             raise ValueError("light/full modes are restricted to Dev")
@@ -138,44 +168,46 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
                 seed_all(seed)
                 seed_dataset = evaluation_view(dataset, cfg, mode or "full", seed)
                 supports = manifest["supports"][str(seed)]
-                real_support = extract_features(model, seed_dataset, supports["real"], cfg, seed).to(model.device)
-                tasks = {}
-                # Encode shared Real Support once; each Fake task still builds its own alpha.
-                for name in dataset.fake_classes:
-                    fake_support = extract_features(model, seed_dataset, supports[name], cfg, seed).to(model.device)
-                    features = torch.cat([real_support, fake_support])
-                    labels = torch.tensor([0] * len(real_support) + [1] * len(fake_support), device=model.device)
-                    tasks[name] = kshot_task(features, labels)
-                real_scores = {name: [] for name in dataset.fake_classes}
-
-                def record(ids, features, name, label):
-                    scores = kshot_scores(features, *tasks[name]).cpu()
-                    predictions = predict(scores)
-                    writer.writerows(dict(uttid=uid, fake_class=name, seed=seed,
-                                           label=label, score=float(score), prediction=int(prediction))
-                                     for uid, score, prediction in zip(ids, scores, predictions))
-                    return scores.numpy()
-
-                for ids, features in feature_batches(model, seed_dataset, manifest["queries"]["real"], cfg, seed):
+                with ReusableAudioLoader(seed_dataset, cfg, training=False, seed=seed) as loader:
+                    support_features = extract_support_features(model, seed_dataset, supports, cfg, seed, loader=loader)
+                    real_support = support_features["real"].to(model.device)
+                    tasks = {}
+                    # Encode shared Real Support once; each Fake task still builds its own alpha.
                     for name in dataset.fake_classes:
-                        real_scores[name].append(record(ids, features, name, 0))
-                seed_rows = []
-                for name in dataset.fake_classes:
-                    fake_scores = [record(ids, features, name, 1) for ids, features in
-                                   feature_batches(model, seed_dataset, manifest["queries"][name], cfg, seed)]
-                    real = np.concatenate(real_scores[name])
-                    fake = np.concatenate(fake_scores)
-                    values = binary_metrics(np.r_[np.zeros(len(real)), np.ones(len(fake))], np.r_[real, fake])
-                    row = dict(seed=seed, fake_class=name, real_query_count=len(real), fake_query_count=len(fake), **values)
-                    if step is not None:
-                        row = dict(step=step, **row)
-                    if mode is not None:
-                        row = dict(mode=mode, **row)
-                    rows.append(row)
-                    seed_rows.append(row)
-                macros.append(dict(seed=seed, **macro_metrics(seed_rows)))
-                if split == "test":
-                    write_csv(output_dir / f"test_per_class_seed{seed}.csv", seed_rows)
+                        fake_support = support_features[name].to(model.device)
+                        features = torch.cat([real_support, fake_support])
+                        labels = torch.tensor([0] * len(real_support) + [1] * len(fake_support), device=model.device)
+                        tasks[name] = kshot_task(features, labels)
+                    real_scores = {name: [] for name in dataset.fake_classes}
+
+                    def record(ids, features, name, label):
+                        scores = kshot_scores(features, *tasks[name]).cpu()
+                        predictions = predict(scores)
+                        writer.writerows(dict(uttid=uid, fake_class=name, seed=seed,
+                                               label=label, score=float(score), prediction=int(prediction))
+                                         for uid, score, prediction in zip(ids, scores, predictions))
+                        return scores.numpy()
+
+                    for ids, features in feature_batches(model, seed_dataset, manifest["queries"]["real"], cfg, seed, loader=loader):
+                        for name in dataset.fake_classes:
+                            real_scores[name].append(record(ids, features, name, 0))
+                    seed_rows = []
+                    for name in dataset.fake_classes:
+                        fake_scores = [record(ids, features, name, 1) for ids, features in
+                                       feature_batches(model, seed_dataset, manifest["queries"][name], cfg, seed, loader=loader)]
+                        real = np.concatenate(real_scores[name])
+                        fake = np.concatenate(fake_scores)
+                        values = binary_metrics(np.r_[np.zeros(len(real)), np.ones(len(fake))], np.r_[real, fake])
+                        row = dict(seed=seed, fake_class=name, real_query_count=len(real), fake_query_count=len(fake), **values)
+                        if step is not None:
+                            row = dict(step=step, **row)
+                        if mode is not None:
+                            row = dict(mode=mode, **row)
+                        rows.append(row)
+                        seed_rows.append(row)
+                    macros.append(dict(seed=seed, **macro_metrics(seed_rows)))
+                    if split == "test":
+                        write_csv(output_dir / f"test_per_class_seed{seed}.csv", seed_rows)
             if split == "dev" and mode is None:
                 write_csv(output_dir / "dev_per_class.csv", rows, append=True)
             summary = mean_std(macros)

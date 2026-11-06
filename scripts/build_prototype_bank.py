@@ -2,6 +2,7 @@ from pathlib import Path
 import _bootstrap
 from utils.config import common_parser, load_config
 from data.speechfake_dataset import SpeechFakeDataset
+from data.waveform_cache import open_waveform_cache
 from models.fs_lprf_model import FSLPRF
 from engine.checkpoint import load_checkpoint, resolve_checkpoint
 from methods.prototype_bank import build_prototype_bank
@@ -17,8 +18,10 @@ def main():
     checkpoint = resolve_checkpoint(args.checkpoint, cfg["runtime"]["output_dir"])
     if checkpoint != resolve_checkpoint("best", cfg["runtime"]["output_dir"]):
         raise ValueError("0-shot bank construction requires the already selected Best checkpoint")
-    # Deliberately use unaugmented WAVs even when Train uses a fixed augmented feature view.
+    # The bank remains unaugmented; use the same full Train waveforms after WAV removal.
     dataset = SpeechFakeDataset(cfg["data"], "train", train_mode=False)
+    if cfg["data"]["train_cache_mode"] == "waveform":
+        dataset.use_cache(open_waveform_cache(dataset, cfg), "waveform")
     model = FSLPRF(cfg)
     load_checkpoint(checkpoint, model)
     bank = build_prototype_bank(model, dataset, cfg, args.seed, checkpoint)

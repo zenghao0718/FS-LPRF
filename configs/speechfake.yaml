@@ -2,8 +2,8 @@ data:
   data_path: ""
   rir_root: ""
   train_cache_mode: waveform
-  dev_cache_mode: xlsr_feature
-  test_cache_mode: xlsr_feature
+  dev_cache_mode: waveform
+  test_cache_mode: none
   max_samples: 64000
   fix_len: true
   trim_silence: true
@@ -65,6 +65,7 @@ runtime:
   train_num_workers: 4
   eval_num_workers: 2
   persistent_train_workers: true
+  persistent_eval_workers: true
   prefetch_factor: 2
   pin_memory: true
   worker_torch_num_threads: 1

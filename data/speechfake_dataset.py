@@ -75,6 +75,8 @@ class SpeechFakeDataset(GeneralFAD):
             raise ValueError(f"SpeechFake-BD requires Real and exactly 32 distinct Fake attacker classes; got {len(self.fake_classes)}")
 
     def use_cache(self, reader, mode):
+        if self.split == "test":
+            raise ValueError("Test must read original WAVs without any cache")
         if mode not in ("waveform", "xlsr_feature") or reader.identity["split"] != self.split:
             raise ValueError("Cache mode/split does not match the dataset")
         if mode == "xlsr_feature" and self.do_augment:

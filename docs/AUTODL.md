@@ -124,63 +124,58 @@ RIR 概率仍为 1/3，`noise_prob=1/5` 仍指 RawBoost Algorithm 5 的触发概
 
 BD baseline 的 Real 仍是一个类别，来源为 AISHELL-1、AISHELL-3、LibriTTS、VCTK；不需要为 Prototype Bank 加入 CommonVoice。后续仅从未增强的 Train 构建原型库时，四个来源各抽取 256 条，Real 合计 1024 条；32 个 Fake 类各自仍为 1024 条，不放回抽样，容量不足直接报错。
 
-生成一份独立的 AutoDL 配置，保留已固定的模型与实验参数：
+只修改现有 configs/speechfake.yaml，不生成第二套正式配置。资源路径按实际目录填写，示例：
 
-```bash
-cp configs/speechfake.yaml configs/speechfake.autodl.yaml
+~~~bash
 python - <<'PY'
 from pathlib import Path
 import yaml
-p = Path('configs/speechfake.autodl.yaml')
+p = Path('configs/speechfake.yaml')
 cfg = yaml.safe_load(p.read_text())
 cfg['data']['data_path'] = '/root/autodl-tmp/speechfake/manifests'
 cfg['data']['rir_root'] = '/root/autodl-tmp/resources/RIRS_NOISES'
+cfg['data'].update(train_cache_mode='waveform', dev_cache_mode='waveform', test_cache_mode='none')
 cfg['model']['frontend_path'] = '/root/autodl-tmp/pretrained/xlsr2_300m.pt'
-cfg['runtime']['device'] = 'cuda:0'
 cfg['cache']['root'] = '/root/autodl-tmp/fs_lprf_cache'
+cfg['runtime']['device'] = 'cuda:0'
 cfg['runtime'].pop('num_workers', None)
-cfg['runtime']['train_num_workers'] = 4
-cfg['runtime']['eval_num_workers'] = 2
-cfg['runtime']['output_dir'] = '/root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1'
-p.write_text(yaml.safe_dump(cfg, sort_keys=False))
+cfg['runtime']['output_dir'] = '/root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2'
+p.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding='utf-8')
 PY
-```
+~~~
 
-若沿用旧配置，请删除 `train.validation_interval_steps`，加入 `train.light_validation_interval_steps: 200`、`train.full_validation_interval_steps: 800`、`validation.light_seed: 42`、`validation.light_max_query_per_class: 1000`。旧正式训练目录不会自动迁移为新调度；请保留它们并另选新输出目录。
+Train/Dev 使用完整 FP32 Waveform，Test 和未来 ASVspoof 保留原始音频，XLS-R 全部在线。默认 Train 4/Eval 2、持续 Worker、prefetch=2、线程1，Linux 需重测。每种子 Loader、合并 Support 和共享 Real Query 保留。
 
-默认 Train 4 / Eval 2 个多进程 Worker；训练 Loader 与持续 Worker 跨 Step 复用。可独立设置 0/2/4/8，并调整预取、pin memory、Worker Torch 线程；旧 `runtime.num_workers` 会发弃用提示并作为兼容覆盖值，应从新配置移除。逐样本 RNG 已与 Worker 生命周期解耦，恢复可更换纯性能参数。`audio_microbatch_size=32` 沿用当前 main，基准时固定；显存不足时只在新 Run 明确调整微批次，不改变每 Step Episode、Support/Query 或预算。Feature Cache 预取的 RAM 代价较大，应实测较小 prefetch（如 1）。
+## 5. 构建、审计与纯缓存预检
 
-新管线默认 Train `waveform`、Dev/Test `xlsr_feature`、FP32。必须使用新的 `output_dir`，保留旧实验目录；旧输入管线的中间状态不可直接接着训练。缓存构建、Train feature 对照与 Baseline 的完整说明见 [DATA_CACHE.md](DATA_CACHE.md)。
+~~~bash
+python scripts/check_data.py --splits train dev test
+python scripts/check_data.py --splits test --read-samples 8
+python scripts/build_cache.py --split train --mode waveform --dry-run
+python scripts/build_cache.py --split dev --mode waveform --dry-run
+df -h /root/autodl-tmp
+python scripts/build_cache.py --split train --mode waveform
+python scripts/build_cache.py --split dev --mode waveform
+python scripts/build_cache.py --split train --mode waveform --check
+python scripts/build_cache.py --split dev --mode waveform --check
+python scripts/audit_waveform_sources.py --output-dir outputs/source_audit_run1
+~~~
 
-## 5. 开跑前检查
+必须同时容纳源数据、两个完整 Cache、Test 与资源。--limit 只做 smoke，不可用于正式运行或删除依据。审计只给建议，不删除；用户确认后手工处理 CSV 中合格的单个 WAV，保留 Test 共享文件、所有 Test WAV、清单、标签、Cache/references、RIR 与权重。不要删除根目录或改 Manifest 路径。新模式用新运行目录。
 
-```bash
-python scripts/check_data.py --config configs/speechfake.autodl.yaml --splits train dev
-```
+删除后：
 
-数据准备完成后才执行本节检查，核对 Train/Dev 路径、类别与容量，保存固定 Dev Manifest。检查器仍保留默认三个 split 的原检查，也可显式选择 split；训练前使用上面的选择不打开 Test。训练启动前再次验证两个 Dev Manifest；清单或配置变化明确报错。第 3 节 Smoke 应已通过；更换权重或环境后重新执行。
+~~~bash
+python scripts/check_data.py --cache-only --splits train dev --read-samples 8
+python scripts/check_cache_runtime.py --splits train dev --batches 2 --with-model
+~~~
 
-先估算空间，使用少量样本做缓存 Smoke，通过后再构建完整缓存（`--limit` 产物禁止正式训练使用）：
-
-```bash
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform --dry-run
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform --limit 1000
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode xlsr_feature \
-  --validation-modes light,full --limit 100 --seeds 42
-# 完整正式缓存
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode xlsr_feature \
-  --validation-modes light,full --dry-run
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode xlsr_feature \
-  --validation-modes light,full
-```
-
-超出磁盘阈值需确认或显式 `--confirm-large-cache`；中断使用 `--resume`，重建 `--force` 保留旧缓存。训练只检查匹配缓存，不会隐式生成。先在 AutoDL 比较 `none,waveform` 的 Worker 0/2/4/8（5 warmup + 20 timed），准备完整 Train feature 缓存后再加入 `xlsr_feature`，命令与总实验时间计算见 [DATA_CACHE.md](DATA_CACHE.md)。真实性能与完整 Dev 空间尚需 AutoDL 实测。
+检查/运行用 Metadata 验证历史来源，不再读已删除的 Train/Dev。缓存错误不回退。输入前向冒烟不更新优化器、不存隐藏状态、不开 Test。完整 14 步与兼容边界见 [DATA_CACHE.md](DATA_CACHE.md)。
 
 ## 6. 正式训练与恢复
 
 ```bash
-python scripts/train.py --config configs/speechfake.autodl.yaml
+python scripts/train.py --config configs/speechfake.yaml
 ```
 
 共 4000 次优化器更新，每步 8 个独立 Episode。每 200 Steps 的非 800 倍数执行轻量 Dev（seed 42、每类最多 1000 Query）；800/1600/2400/3200/4000 先保存独立节点，再执行完整五种子 Dev。共 15 次轻量 + 5 次完整，只有完整 Dev 的 Macro EER 均值参与 Best，平局取较早节点。Best 由 JSON 索引指向现有节点，不复制 `best.pt`、不生成逐步 `last.pt`。中断最多损失最近节点后 799 个未保存更新。
@@ -188,24 +183,24 @@ python scripts/train.py --config configs/speechfake.autodl.yaml
 恢复时保留原配置、两个 Dev Manifest 和完整输出历史，使用最新可用节点。若该节点的完整 Dev 未成功结束，先补做再继续下一 Step：
 
 ```bash
-python scripts/train.py --config configs/speechfake.autodl.yaml \
-  --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1/checkpoints/step_0800.pt
+python scripts/train.py --config configs/speechfake.yaml \
+  --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2/checkpoints/step_0800.pt
 ```
 
 可在另一个终端查看日志和 TensorBoard：
 
 ```bash
-tail -f /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1/train.log
-tensorboard --logdir /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_cache_v1/tensorboard \
+tail -f /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2/train.log
+tensorboard --logdir /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2/tensorboard \
   --host 0.0.0.0 --port 6006
 ```
 
 ## 7. Test 10-shot
 
-本机不执行真实 Test。后续训练、Dev 选模与调参全部完成后，以下入口才解析/加载 Best，并生成或读取 Test 前端缓存，随后按原结构输出正式指标。显式节点路径必须与 Best 索引一致；普通缓存命令不能生成 Test。可先用同一命令加 `--cache-dry-run` 只估算，不计算指标；超阈值需确认后加 `--confirm-large-cache`。首次缓存创建与正式评估耗时分开记录，不能把缓存后重复读取速度当作首次收益。
+本机不执行真实 Test。训练和 Dev 选模完成后，加载 Best，从原始 Test WAV 在线执行基础预处理、确定性裁剪和模型推理；不构建、读取或估算 Test Cache，不增强，指标与输出格式不变。旧缓存相关参数明确拒绝。
 
 ```bash
-python scripts/evaluate.py --config configs/speechfake.autodl.yaml \
+python scripts/evaluate.py --config configs/speechfake.yaml \
   --checkpoint best \
   --shot 10
 ```

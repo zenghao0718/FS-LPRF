@@ -14,7 +14,7 @@ from engine.pipeline_benchmark import benchmark_train, benchmark_dev, total_expe
 
 def main():
     parser = common_parser("Measure pipeline costs on AutoDL using disposable model/optimizer state")
-    parser.add_argument("--modes", default="none,waveform,xlsr_feature")
+    parser.add_argument("--modes", default="none,waveform")
     parser.add_argument("--workers", default="0,2,4,8")
     parser.add_argument("--warmup", type=int, default=5)
     parser.add_argument("--steps", type=int, default=20)

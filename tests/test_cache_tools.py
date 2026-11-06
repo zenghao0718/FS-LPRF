@@ -49,7 +49,7 @@ def test_feature_estimate_measures_time_dimension_and_large_cache_confirmation(d
     cfg["cache"]["warn_if_estimated_gb_above"] = 1e-9
     monkeypatch.setattr(cli, "load_config", Mock(return_value=cfg))
     monkeypatch.setattr(fs_lprf_model, "FSLPRF", lambda cfg: synthetic_model())
-    monkeypatch.setattr(sys, "argv", ["build_cache.py", "--split", "train", "--mode", "xlsr_feature", "--limit", "2"])
+    monkeypatch.setattr(sys, "argv", ["build_cache.py", "--split", "train", "--mode", "waveform", "--limit", "2"])
     with pytest.raises(ValueError, match="confirm-large-cache"):
         cli.main()
     assert not Path(cfg["cache"]["root"]).exists()
@@ -63,16 +63,15 @@ def test_final_test_dry_run_has_no_cache_writes_or_backend_metrics(dataset, conf
     manifest = load_or_create_manifest(ds, path, 10, cfg["test"]["seeds"])
     model = synthetic_model()
     model.forward_from_frontend_features = Mock(side_effect=AssertionError("No backend or metrics during cache planning"))
-    report = prepare_final_test_caches(ds, cfg, manifest, path, model, dry_run=True)
-    assert report["dry_run"] and len(report["estimates"]) == 5
+    with pytest.raises(ValueError, match="Test caches are forbidden"):
+        prepare_final_test_caches(ds, cfg, manifest, path, model, dry_run=True)
     assert not Path(cfg["cache"]["root"]).exists()
     model.forward_from_frontend_features.assert_not_called()
-    cfg["cache"]["warn_if_estimated_gb_above"] = 1e-9
-    with pytest.raises(ValueError, match="confirm-large-cache"):
+    with pytest.raises(ValueError, match="Test caches are forbidden"):
         prepare_final_test_caches(ds, cfg, manifest, path, model)
 
 
-@pytest.mark.parametrize("override", ["data.train_cache_mode=bad", "data.dev_cache_mode=waveform", "cache.feature_dtype=bfloat16",
+@pytest.mark.parametrize("override", ["data.train_cache_mode=bad", "data.test_cache_mode=waveform", "cache.feature_dtype=bfloat16",
                                      "cache.schema_version=2", "cache.feature_build_batch_size=0", "runtime.train_num_workers=-1",
                                      "runtime.prefetch_factor=0", "runtime.pin_memory=1", "cache.root=models/cached"])
 def test_invalid_cache_and_worker_configuration_is_rejected(override):

@@ -9,6 +9,8 @@ from utils.config import common_parser, load_config
 from utils.seed import preserved_rng
 from data.cache import cache_path
 from data.cache_pipeline import cache_specs, estimate_cache, build_dataset_cache, require_cache
+from data.waveform_cache import open_waveform_cache
+from data.speechfake_dataset import SpeechFakeDataset
 
 
 def confirm_space(estimates, confirmed=False):
@@ -23,9 +25,9 @@ def confirm_space(estimates, confirmed=False):
 
 
 def main():
-    parser = common_parser("Build/check Train or Dev caches; Test is restricted to final evaluate.py")
+    parser = common_parser("Build/check Train or Dev caches; Test always uses original WAVs")
     parser.add_argument("--split", choices=["train", "dev"], required=True)
-    parser.add_argument("--mode", choices=["waveform", "xlsr_feature"], required=True)
+    parser.add_argument("--mode", choices=["waveform"], required=True)
     parser.add_argument("--validation-modes", default="light,full")
     parser.add_argument("--seeds", help="Comma-separated manifest seeds for a small cache-generation smoke")
     parser.add_argument("--dry-run", action="store_true")
@@ -39,6 +41,13 @@ def main():
     started = time.perf_counter()
     seeds = [int(seed) for seed in args.seeds.split(",")] if args.seeds else None
     with preserved_rng():
+        if args.check and args.mode == "waveform":
+            dataset = SpeechFakeDataset(cfg["data"], args.split, train_mode=False)
+            ids = dataset.uttids[:args.limit] if args.limit is not None else None
+            reader = open_waveform_cache(dataset, cfg, uttids=ids,
+                                         allow_smoke=args.limit is not None, verify_checksums=True)
+            print(json.dumps(dict(status="verified", caches=[reader.verify()]), indent=2))
+            return
         dataset, identities = cache_specs(cfg, args.split, args.mode,
                          validation_modes=args.validation_modes.split(","), limit=args.limit, seeds=seeds)
         if args.check:
@@ -46,14 +55,7 @@ def main():
             print(json.dumps(dict(status="verified", caches=reports), indent=2))
             return
         model = None
-        # Reusing a complete cache does not initialize XLS-R or download anything.
-        needs_model = args.mode == "xlsr_feature" and (args.dry_run or args.force or
-                                      any(not cache_path(cfg, identity).exists() for identity in identities))
-        if needs_model:
-            from models.fs_lprf_model import FSLPRF
-            model = FSLPRF(cfg)
-        estimates = [estimate_cache(dataset, cfg, identity, model) for identity in identities] if (
-            args.dry_run or model is not None or args.mode == "waveform") else []
+        estimates = [estimate_cache(dataset, cfg, identity) for identity in identities]
         preparation = time.perf_counter() - started
         if estimates:
             total = sum(row["bytes"] for row in estimates)

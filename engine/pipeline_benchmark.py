@@ -11,6 +11,7 @@ import torch
 
 from data.cache_pipeline import open_train_dataset, dev_manifests, bind_evaluation_caches
 from data.cache import source_digest, file_sha, canonical_sha, PREPROCESSING
+from data.waveform_cache import open_waveform_cache
 from data.randomness import RNG_SCHEMA_VERSION
 from data.loaders import ReusableAudioLoader, worker_options
 from data.speechfake_dataset import SpeechFakeDataset
@@ -44,7 +45,9 @@ def loader_pids(reusable):
 def dev_measurement_identity(cfg):
     dataset = SpeechFakeDataset(cfg["data"], "dev")
     root = Path(cfg["data"]["data_path"])
-    return canonical_sha(dict(source_audio_sha256=source_digest(dataset, dataset.uttids),
+    source = (open_waveform_cache(dataset, cfg).identity["source_audio_sha256"]
+              if cfg["data"]["dev_cache_mode"] == "waveform" else source_digest(dataset, dataset.uttids))
+    return canonical_sha(dict(source_audio_sha256=source,
              manifests={suffix: file_sha(root / f"dev.{suffix}") for suffix in ("tsv", "txt")},
              frontend_sha256=file_sha(cfg["model"]["frontend_path"]), validation=cfg["validation"],
              preprocessing=PREPROCESSING, rng_schema_version=RNG_SCHEMA_VERSION,
@@ -126,7 +129,7 @@ def timed_backend(model, timings):
             setattr(owner, name, original)
 
 
-def benchmark_train(model, cfg, *, modes=("none", "waveform", "xlsr_feature"), workers=(0, 2, 4, 8),
+def benchmark_train(model, cfg, *, modes=("none", "waveform"), workers=(0, 2, 4, 8),
                     warmup=5, steps=20, dataset_factory=open_train_dataset):
     if warmup < 0 or steps <= 0:
         raise ValueError("Benchmark warmup must be nonnegative and timed steps positive")
@@ -207,7 +210,7 @@ def benchmark_dev(model, cfg, output_dir):
     dataset = SpeechFakeDataset(cfg["data"], "dev")
     manifests = dev_manifests(dataset, cfg)
     rows = {}
-    for cache_mode in ("none", "xlsr_feature"):
+    for cache_mode in ("none", "waveform"):
         local = copy.deepcopy(cfg)
         local["data"]["dev_cache_mode"] = cache_mode
         readers = bind_evaluation_caches(dataset, local, manifests)
@@ -222,7 +225,7 @@ def benchmark_dev(model, cfg, output_dir):
             timer.synchronize()
             row[f"{mode}_seconds"] = time.perf_counter() - started
             row[f"{mode}_cache_build_seconds"] = sum(reader.metadata["build_seconds"] for reader in readers
-                                                        if reader.identity["validation_mode"] == mode)
+                                                        if reader.identity["validation_mode"] in (None, mode))
         rows[cache_mode] = row
     return rows
 
@@ -232,7 +235,7 @@ def total_experiment_times(train_rows, dev_rows, cfg):
     light = sum(validation_mode(step, cfg["train"]) == "light" for step in range(1, cfg["train"]["total_steps"] + 1))
     full = sum(validation_mode(step, cfg["train"]) == "full" for step in range(1, cfg["train"]["total_steps"] + 1))
     for row in train_rows:
-        dev = dev_rows.get("none" if row["mode"] == "none" else "xlsr_feature")
+        dev = dev_rows.get("none" if row["mode"] == "none" else "waveform")
         total = None if dev is None else (row["cache"]["build_seconds"] + dev["cache_build_seconds"] +
                     cfg["train"]["total_steps"] * row["mean_step_seconds"] + light * dev["light_seconds"] + full * dev["full_seconds"])
         totals.append(dict(mode=row["mode"], num_workers=row["num_workers"], total_seconds=total,

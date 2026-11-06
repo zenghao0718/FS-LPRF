@@ -149,7 +149,7 @@ def test_dev_cache_must_be_bound_and_never_builds_during_training(dataset, confi
         evaluation_view(dataset, cfg, "full", 42)
     with pytest.raises(ValueError, match="never silently generate"):
         bind_evaluation_caches(dataset, cfg, {}, build_missing=True, model=Mock())
-    with pytest.raises(ValueError, match="Test caches belong"):
+    with pytest.raises(ValueError, match="Test must read original WAVs"):
         cache_specs(cfg, "test", "xlsr_feature")
 
 

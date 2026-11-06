@@ -120,7 +120,8 @@ def test_rng_context_restores_after_failure_and_uses_stable_digest():
 def test_pipeline_defaults_and_legacy_worker_override(config):
     defaults = load_config("configs/speechfake.yaml")
     assert defaults["data"]["train_cache_mode"] == "waveform"
-    assert defaults["data"]["dev_cache_mode"] == defaults["data"]["test_cache_mode"] == "xlsr_feature"
+    assert defaults["data"]["dev_cache_mode"] == "waveform"
+    assert defaults["data"]["test_cache_mode"] == "none"
     assert defaults["cache"]["feature_dtype"] == "float32"
     assert defaults["runtime"]["train_num_workers"] == 4 and defaults["runtime"]["eval_num_workers"] == 2
     old = load_config("configs/speechfake.yaml", ["runtime.num_workers=0"])
@@ -135,7 +136,7 @@ def test_run_identity_ignores_worker_performance_but_binds_cache_and_rng(config)
     original = make_run_identity(config, "full", "light", "train", bindings)
     changed = copy.deepcopy(config)
     changed["runtime"].update(train_num_workers=8, eval_num_workers=4, prefetch_factor=1,
-                               pin_memory=False, worker_torch_num_threads=2, persistent_train_workers=False,
+                               pin_memory=False, worker_torch_num_threads=2, persistent_train_workers=False, persistent_eval_workers=False,
                                device="cuda:7")
     assert make_run_identity(changed, "full", "light", "train", bindings) == original
     for altered in (dict(bindings, rng_schema_version=2), dict(bindings, caches=[dict(fingerprint="different")])):
