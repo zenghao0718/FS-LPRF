@@ -58,12 +58,12 @@ tensorboard --logdir /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf/tensorboar
 
 仅五种子完整 Dev 的 Macro EER 均值选 Best，按 `(mean_eer, step)` 最小值决定，平局取较早节点。`checkpoints/best_checkpoint.json` 包含相对节点名、Step、EER、节点 SHA 和 run/manifest/data 身份；解析器拒绝路径逃逸、节点名/Step 不一致、哈希或身份不匹配。
 
-新的 Waveform 实验使用 `configs/speechfake.autodl.yaml`，输出目录是 `speechfake_fs_lprf_waveform_v2`。已经完成的 `speechfake_fs_lprf` 保留原目录，不用这份新数据配置去恢复。
+新的 Waveform 实验使用 `configs/speechfake.yaml`，输出目录是 `speechfake_fs_lprf_waveform_v2`。已经完成的 `speechfake_fs_lprf` 保留原目录，不用这份新数据配置去恢复。
 
 ```bash
-python scripts/train.py --config configs/speechfake.autodl.yaml --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2/checkpoints/step_0800.pt
+python scripts/train.py --config configs/speechfake.yaml --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2/checkpoints/step_0800.pt
 # 全部训练和Dev选模完成后才执行Test：
-python scripts/evaluate.py --config configs/speechfake.autodl.yaml --checkpoint best --shot 10
+python scripts/evaluate.py --config configs/speechfake.yaml --checkpoint best --shot 10
 ```
 
 恢复行为：

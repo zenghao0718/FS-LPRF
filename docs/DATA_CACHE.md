@@ -13,7 +13,7 @@
 
 ## 配置与构建
 
-通用协议和缓存模式在 `configs/speechfake.yaml`。AutoDL 的绝对路径在 `configs/speechfake.autodl.yaml`，训练和检查命令用 `--config configs/speechfake.autodl.yaml` 加载。两边的模型、Episode 和优化协议保持一致。
+唯一配置是 `configs/speechfake.yaml`。缓存模式、Worker 和资源路径都写在这一份文件里。模型、Episode 和优化协议保持不变。
 
 ~~~yaml
 data:
@@ -77,7 +77,6 @@ python scripts/build_cache.py --split dev --mode waveform --check
 python scripts/check_data.py --cache-only --splits train dev --read-samples 8
 python scripts/check_cache_runtime.py --splits train dev --batches 2 --with-model
 python scripts/train.py --config configs/speechfake.yaml
-# AutoDL: python scripts/train.py --config configs/speechfake.autodl.yaml
 ~~~
 
 check_cache_runtime 只检验输入/可选在线前向，无优化器更新、不保存状态、不开 Test。Train 动态增强仍读必须保留的 RIR WAV。原型库脚本也可读无增强 Train Cache，不依赖已删除的 Train WAV；原型、配额与决策未改。

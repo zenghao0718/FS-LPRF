@@ -117,7 +117,6 @@ python scripts/build_cache.py --config configs/speechfake.yaml --split train --m
 python scripts/build_cache.py --config configs/speechfake.yaml --split train --mode waveform
 python scripts/build_cache.py --config configs/speechfake.yaml --split dev --mode waveform
 python scripts/train.py --config configs/speechfake.yaml
-python scripts/train.py --config configs/speechfake.autodl.yaml
 python scripts/train.py --config configs/speechfake.yaml --resume outputs/speechfake_fs_lprf/checkpoints/step_0800.pt
 # 完成训练和Dev选模后，才执行正式Test：
 python scripts/evaluate.py --config configs/speechfake.yaml --checkpoint best --shot 10
@@ -154,7 +153,7 @@ Pytest 使用合成向量和临时 WAV，覆盖梯度、损失聚合、一次更
 
 ## Train/Dev 纯缓存与原始 Test
 
-通用默认配置是 `configs/speechfake.yaml`。AutoDL 使用 `configs/speechfake.autodl.yaml` 加载 `SpeechFake_Processed` 的清单、缓存、RIR、XLS-R 和新运行目录。保留原 Manifest 的原始路径字符串，不把 TSV 改成分片路径。构建时保存来源 SHA，正式读取校验历史来源和缓存内容，不再要求源 WAV 存在。
+唯一配置是 `configs/speechfake.yaml`，已经指向 `SpeechFake_Processed` 的清单、缓存、RIR、XLS-R 和新运行目录。保留原 Manifest 的原始路径字符串，不把 TSV 改成分片路径。构建时保存来源 SHA，正式读取校验历史来源和缓存内容，不再要求源 WAV 存在。
 
 ~~~bash
 python scripts/build_cache.py --split train --mode waveform --check

@@ -14,7 +14,7 @@ SpeechFake_Processed/
     └── 与 /root/autodl-tmp/SpeechFake_Data/ 之后相对路径相同的 Test WAV
 ```
 
-解压到 `/root/autodl-tmp/SpeechFake_Processed` 后，使用 `configs/speechfake.autodl.yaml`。通用的 `configs/speechfake.yaml` 继续保持空路径。专用配置中的资源路径是：
+解压到 `/root/autodl-tmp/SpeechFake_Processed` 后，使用唯一配置 `configs/speechfake.yaml`。其中的资源路径是：
 
 ```yaml
 data:
@@ -33,8 +33,8 @@ Train/Dev 不读取原始 WAV。`data/audio.py` 的字节不能改变，它的 S
 检查：
 
 ```bash
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform --check
-python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode waveform --check
-python scripts/check_data.py --config configs/speechfake.autodl.yaml --cache-only --splits train dev --read-samples 8
-python scripts/check_data.py --config configs/speechfake.autodl.yaml --splits test --read-samples 8
+python scripts/build_cache.py --config configs/speechfake.yaml --split train --mode waveform --check
+python scripts/build_cache.py --config configs/speechfake.yaml --split dev --mode waveform --check
+python scripts/check_data.py --config configs/speechfake.yaml --cache-only --splits train dev --read-samples 8
+python scripts/check_data.py --config configs/speechfake.yaml --splits test --read-samples 8
 ```

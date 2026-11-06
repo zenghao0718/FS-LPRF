@@ -1,6 +1,6 @@
 data:
-  data_path: ""
-  rir_root: ""
+  data_path: /root/autodl-tmp/SpeechFake_Processed/manifests
+  rir_root: /root/autodl-tmp/resources/RIRS_NOISES
   train_cache_mode: waveform
   dev_cache_mode: waveform
   test_cache_mode: none
@@ -12,7 +12,7 @@ data:
 
 model:
   frontend: XLSR
-  frontend_path: pretrained/xlsr2_300m.pt
+  frontend_path: /root/autodl-tmp/pretrained/xlsr2_300m.pt
   frontend_dim: 1024
   num_layers: 25
   layer_attn_head: 4
@@ -51,7 +51,7 @@ test:
   seeds: [17, 42, 71, 100, 123]
 
 cache:
-  root: cache/fs_lprf
+  root: /root/autodl-tmp/SpeechFake_Processed
   schema_version: 1
   feature_dtype: float32
   feature_build_batch_size: 8
@@ -69,4 +69,4 @@ runtime:
   prefetch_factor: 2
   pin_memory: true
   worker_torch_num_threads: 1
-  output_dir: outputs/speechfake_fs_lprf
+  output_dir: /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2
