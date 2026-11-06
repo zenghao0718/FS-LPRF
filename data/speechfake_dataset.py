@@ -18,6 +18,30 @@ class ConfiguredRawBoost(RawBoostAudioAugmentation):
         self.rir = self._get_all_rir_paths(self.rir_root)
 
 
+LEGACY_SPEECHFAKE_PREFIX = "/root/autodl-tmp/SpeechFake_Data/"
+
+
+def locate_audio_file(dataset, stored):
+    """Resolve a Test file inside the processed dataset without altering identity strings.
+
+    Manifests keep the absolute paths recorded in the waveform cache fingerprint.
+    Train and Dev waveform reads do not use this path. Test uses a sibling
+    ``test/`` directory when the packaged file is present, and otherwise keeps
+    the manifest path so an unmoved source tree still opens.
+    """
+    stored = str(stored)
+    prefix = LEGACY_SPEECHFAKE_PREFIX
+    if getattr(dataset, "split", None) != "test" or not stored.startswith(prefix):
+        return stored
+    relative = Path(stored[len(prefix):])
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        return stored
+    packaged = Path(dataset.args.data_path).resolve().parent / "test" / relative
+    if packaged.is_file() and not packaged.is_symlink():
+        return str(packaged)
+    return stored
+
+
 def validate_manifest(data_path, split):
     """Validate the GeneralFAD contract before its permissive dictionaries are populated."""
     ids = []
@@ -92,7 +116,15 @@ class SpeechFakeDataset(GeneralFAD):
     def load_preprocessed_waveform(self, uttid):
         if self.cache_mode == "waveform":
             return self.cache_reader.get(uttid)
-        return super().load_preprocessed_waveform(uttid)
+        stored = self.uttid2path[uttid]
+        located = locate_audio_file(self, stored)
+        if located == stored:
+            return super().load_preprocessed_waveform(uttid)
+        self.uttid2path[uttid] = located
+        try:
+            return super().load_preprocessed_waveform(uttid)
+        finally:
+            self.uttid2path[uttid] = stored
 
     @staticmethod
     def collate_fn(batch):

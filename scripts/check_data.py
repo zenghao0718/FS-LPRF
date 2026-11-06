@@ -3,7 +3,7 @@ from pathlib import Path
 import json
 import _bootstrap
 from utils.config import common_parser, load_config
-from data.speechfake_dataset import SpeechFakeDataset, ConfiguredRawBoost
+from data.speechfake_dataset import SpeechFakeDataset, ConfiguredRawBoost, locate_audio_file
 from data.episode_sampler import EpisodeSampler
 from data.waveform_cache import open_waveform_cache
 from data.evaluation_manifest import load_or_create_manifest
@@ -37,7 +37,7 @@ def main():
         seen_ids.update(ds.uttids)
         seen_paths.update(paths)
         missing = [] if args.cache_only else [
-            uid for uid, path in ds.uttid2path.items() if not Path(path).is_file()]
+            uid for uid, path in ds.uttid2path.items() if not Path(locate_audio_file(ds, path)).is_file()]
         if missing:
             raise ValueError(f"{split}: {len(missing)} missing audio files; first: {missing[:5]}")
         for index in range(min(args.read_samples, len(ds))):
