@@ -1,0 +1,74 @@
+# AutoDL 专用路径。训练协议与 configs/speechfake.yaml 相同。
+# python scripts/train.py --config configs/speechfake.autodl.yaml
+data:
+  data_path: /root/autodl-tmp/SpeechFake_Processed/manifests
+  rir_root: /root/autodl-tmp/resources/RIRS_NOISES
+  train_cache_mode: waveform
+  dev_cache_mode: waveform
+  test_cache_mode: none
+  max_samples: 64000
+  fix_len: true
+  trim_silence: true
+  do_augment: true
+  augment_type: rawboost
+
+model:
+  frontend: XLSR
+  frontend_path: /root/autodl-tmp/pretrained/xlsr2_300m.pt
+  frontend_dim: 1024
+  num_layers: 25
+  layer_attn_head: 4
+  reduce_dim: false
+  attn_cfg: default
+  have_padding_mask: false
+  freeze_frontend: true
+  bottleneck_dim: 256
+
+train:
+  seed: 42
+  way: 3
+  support_per_class: 5
+  total_query_per_episode: 15
+  episodes_per_step: 8
+  audio_microbatch_size: 32
+  total_steps: 4000
+  optimizer: AdamW
+  learning_rate: 0.0001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+  warmup_steps: 100
+  min_learning_rate: 0.000001
+  gradient_clip: 1.0
+  light_validation_interval_steps: 200
+  full_validation_interval_steps: 800
+
+validation:
+  shot: 10
+  seeds: [17, 42, 71, 100, 123]
+  light_seed: 42
+  light_max_query_per_class: 1000
+
+test:
+  shot: 10
+  seeds: [17, 42, 71, 100, 123]
+
+cache:
+  root: /root/autodl-tmp/SpeechFake_Processed
+  schema_version: 1
+  feature_dtype: float32
+  feature_build_batch_size: 8
+  shard_size: 64
+  verify_checksums: true
+  train_feature_seed: null
+  warn_if_estimated_gb_above: 100
+
+runtime:
+  device: cuda:0
+  train_num_workers: 4
+  eval_num_workers: 2
+  persistent_train_workers: true
+  persistent_eval_workers: true
+  prefetch_factor: 2
+  pin_memory: true
+  worker_torch_num_threads: 1
+  output_dir: /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2

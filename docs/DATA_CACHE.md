@@ -11,9 +11,9 @@
 
 基础处理仍调用 data/audio.py 的 get_audio 和 FADTrim.load_preprocessed_waveform；读取/解码、16 kHz 重采样、首声道、静音裁剪、-20 dB RMS/限幅的顺序与参数未改。固定裁剪、增强和 XLS-R 隐藏状态不进入 Cache。
 
-## 唯一配置与构建
+## 配置与构建
 
-只修改 configs/speechfake.yaml 的资源路径和新输出目录，不另建正式 YAML：
+通用协议和缓存模式在 `configs/speechfake.yaml`。AutoDL 的绝对路径在 `configs/speechfake.autodl.yaml`，训练和检查命令用 `--config configs/speechfake.autodl.yaml` 加载。两边的模型、Episode 和优化协议保持一致。
 
 ~~~yaml
 data:
@@ -77,6 +77,7 @@ python scripts/build_cache.py --split dev --mode waveform --check
 python scripts/check_data.py --cache-only --splits train dev --read-samples 8
 python scripts/check_cache_runtime.py --splits train dev --batches 2 --with-model
 python scripts/train.py --config configs/speechfake.yaml
+# AutoDL: python scripts/train.py --config configs/speechfake.autodl.yaml
 ~~~
 
 check_cache_runtime 只检验输入/可选在线前向，无优化器更新、不保存状态、不开 Test。Train 动态增强仍读必须保留的 RIR WAV。原型库脚本也可读无增强 Train Cache，不依赖已删除的 Train WAV；原型、配额与决策未改。

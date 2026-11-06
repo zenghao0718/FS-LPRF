@@ -124,41 +124,35 @@ RIR 概率仍为 1/3，`noise_prob=1/5` 仍指 RawBoost Algorithm 5 的触发概
 
 BD baseline 的 Real 仍是一个类别，来源为 AISHELL-1、AISHELL-3、LibriTTS、VCTK；不需要为 Prototype Bank 加入 CommonVoice。后续仅从未增强的 Train 构建原型库时，四个来源各抽取 256 条，Real 合计 1024 条；32 个 Fake 类各自仍为 1024 条，不放回抽样，容量不足直接报错。
 
-只修改现有 configs/speechfake.yaml，不生成第二套正式配置。资源路径按实际目录填写，示例：
+`configs/speechfake.yaml` 保持通用默认值，数据路径留空。AutoDL 使用已跟踪的 `configs/speechfake.autodl.yaml`，不要把本机绝对路径写回通用文件。该专用配置的协议字段与通用文件一致，只填写这些资源：
 
-~~~bash
-python - <<'PY'
-from pathlib import Path
-import yaml
-p = Path('configs/speechfake.yaml')
-cfg = yaml.safe_load(p.read_text())
-cfg['data']['data_path'] = '/root/autodl-tmp/speechfake/manifests'
-cfg['data']['rir_root'] = '/root/autodl-tmp/resources/RIRS_NOISES'
-cfg['data'].update(train_cache_mode='waveform', dev_cache_mode='waveform', test_cache_mode='none')
-cfg['model']['frontend_path'] = '/root/autodl-tmp/pretrained/xlsr2_300m.pt'
-cfg['cache']['root'] = '/root/autodl-tmp/fs_lprf_cache'
-cfg['runtime']['device'] = 'cuda:0'
-cfg['runtime'].pop('num_workers', None)
-cfg['runtime']['output_dir'] = '/root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2'
-p.write_text(yaml.safe_dump(cfg, sort_keys=False), encoding='utf-8')
-PY
+~~~yaml
+data:
+  data_path: /root/autodl-tmp/SpeechFake_Processed/manifests
+  rir_root: /root/autodl-tmp/resources/RIRS_NOISES
+model:
+  frontend_path: /root/autodl-tmp/pretrained/xlsr2_300m.pt
+cache:
+  root: /root/autodl-tmp/SpeechFake_Processed
+runtime:
+  output_dir: /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2
 ~~~
 
-Train/Dev 使用完整 FP32 Waveform，Test 和未来 ASVspoof 保留原始音频，XLS-R 全部在线。默认 Train 4/Eval 2、持续 Worker、prefetch=2、线程1，Linux 需重测。每种子 Loader、合并 Support 和共享 Real Query 保留。
+Train/Dev 从 `cache.root` 读取已经构建的 FP32 Waveform，Test 从 `SpeechFake_Processed/test` 读取原始 WAV，XLS-R 全部在线。默认 Train 4/Eval 2、持续 Worker、prefetch=2、线程 1。输出目录是新的 waveform 运行目录，已完成的 `speechfake_fs_lprf` 保持不变。每种子 Loader、合并 Support 和共享 Real Query 保留。
 
 ## 5. 构建、审计与纯缓存预检
 
 ~~~bash
-python scripts/check_data.py --splits train dev test
-python scripts/check_data.py --splits test --read-samples 8
-python scripts/build_cache.py --split train --mode waveform --dry-run
-python scripts/build_cache.py --split dev --mode waveform --dry-run
+python scripts/check_data.py --config configs/speechfake.autodl.yaml --splits train dev test
+python scripts/check_data.py --config configs/speechfake.autodl.yaml --splits test --read-samples 8
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform --dry-run
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode waveform --dry-run
 df -h /root/autodl-tmp
-python scripts/build_cache.py --split train --mode waveform
-python scripts/build_cache.py --split dev --mode waveform
-python scripts/build_cache.py --split train --mode waveform --check
-python scripts/build_cache.py --split dev --mode waveform --check
-python scripts/audit_waveform_sources.py --output-dir outputs/source_audit_run1
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode waveform
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split train --mode waveform --check
+python scripts/build_cache.py --config configs/speechfake.autodl.yaml --split dev --mode waveform --check
+python scripts/audit_waveform_sources.py --config configs/speechfake.autodl.yaml --output-dir outputs/source_audit_run1
 ~~~
 
 必须同时容纳源数据、两个完整 Cache、Test 与资源。--limit 只做 smoke，不可用于正式运行或删除依据。审计只给建议，不删除；用户确认后手工处理 CSV 中合格的单个 WAV，保留 Test 共享文件、所有 Test WAV、清单、标签、Cache/references、RIR 与权重。不要删除根目录或改 Manifest 路径。新模式用新运行目录。
@@ -166,8 +160,8 @@ python scripts/audit_waveform_sources.py --output-dir outputs/source_audit_run1
 删除后：
 
 ~~~bash
-python scripts/check_data.py --cache-only --splits train dev --read-samples 8
-python scripts/check_cache_runtime.py --splits train dev --batches 2 --with-model
+python scripts/check_data.py --config configs/speechfake.autodl.yaml --cache-only --splits train dev --read-samples 8
+python scripts/check_cache_runtime.py --config configs/speechfake.autodl.yaml --splits train dev --batches 2 --with-model
 ~~~
 
 检查/运行用 Metadata 验证历史来源，不再读已删除的 Train/Dev。缓存错误不回退。输入前向冒烟不更新优化器、不存隐藏状态、不开 Test。完整 14 步与兼容边界见 [DATA_CACHE.md](DATA_CACHE.md)。
@@ -175,7 +169,7 @@ python scripts/check_cache_runtime.py --splits train dev --batches 2 --with-mode
 ## 6. 正式训练与恢复
 
 ```bash
-python scripts/train.py --config configs/speechfake.yaml
+python scripts/train.py --config configs/speechfake.autodl.yaml
 ```
 
 共 4000 次优化器更新，每步 8 个独立 Episode。每 200 Steps 的非 800 倍数执行轻量 Dev（seed 42、每类最多 1000 Query）；800/1600/2400/3200/4000 先保存独立节点，再执行完整五种子 Dev。共 15 次轻量 + 5 次完整，只有完整 Dev 的 Macro EER 均值参与 Best，平局取较早节点。Best 由 JSON 索引指向现有节点，不复制 `best.pt`、不生成逐步 `last.pt`。中断最多损失最近节点后 799 个未保存更新。
@@ -183,7 +177,7 @@ python scripts/train.py --config configs/speechfake.yaml
 恢复时保留原配置、两个 Dev Manifest 和完整输出历史，使用最新可用节点。若该节点的完整 Dev 未成功结束，先补做再继续下一 Step：
 
 ```bash
-python scripts/train.py --config configs/speechfake.yaml \
+python scripts/train.py --config configs/speechfake.autodl.yaml \
   --resume /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2/checkpoints/step_0800.pt
 ```
 
@@ -200,7 +194,7 @@ tensorboard --logdir /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v
 本机不执行真实 Test。训练和 Dev 选模完成后，加载 Best，从原始 Test WAV 在线执行基础预处理、确定性裁剪和模型推理；不构建、读取或估算 Test Cache，不增强，指标与输出格式不变。旧缓存相关参数明确拒绝。
 
 ```bash
-python scripts/evaluate.py --config configs/speechfake.yaml \
+python scripts/evaluate.py --config configs/speechfake.autodl.yaml \
   --checkpoint best \
   --shot 10
 ```

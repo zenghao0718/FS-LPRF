@@ -26,4 +26,5 @@ dist/
 .env
 .env.*
 configs/*.autodl.yaml
+!configs/speechfake.autodl.yaml
 *.log
