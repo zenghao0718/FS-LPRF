@@ -100,6 +100,7 @@ def test_three_formats_complete_same_cli_without_dataset_selection(layouts, tmp_
     checkpoint_bytes = checkpoint.read_bytes()
     args = cli.build_parser().parse_args(["--mode", "labeled", "--manifest", str(item["source"]),
                   "--mapping", str(item["mapping"]), "--group-by", item["group_by"],
+                  "--seeds", "17,42,71,100,123",
                   "--checkpoint", str(checkpoint), "--output-dir", str(tmp_path / f"result_{index}"),
                   "--set", "runtime.eval_num_workers=0"])
     actual = cli.ExternalDataset

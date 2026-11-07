@@ -5,12 +5,36 @@ from pathlib import Path
 from data.evaluation_manifest import DEV_SEEDS, dataset_fingerprint, load_or_create_manifest
 
 
-def labeled_protocol(dataset, path):
+def parse_external_seeds(text):
+    """Development default is seed 42. The paper protocol remains 17,42,71,100,123."""
+    if text is None:
+        return [42]
+    tokens = [token.strip() for token in str(text).split(",")]
+    if not tokens or any(not token for token in tokens):
+        raise ValueError("Labeled --seeds requires comma-separated positive integers, for example 42 or 17,42,71,100,123")
+    seeds = []
+    for token in tokens:
+        if not token.isdecimal() or str(int(token)) != token:
+            raise ValueError(f"Invalid labeled seed {token!r}; use positive integers without signs or leading zeros")
+        value = int(token)
+        if value <= 0:
+            raise ValueError(f"Invalid labeled seed {token!r}; seeds must be positive")
+        seeds.append(value)
+    if len(set(seeds)) != len(seeds):
+        raise ValueError(f"Duplicate labeled seeds: {seeds}")
+    return seeds
+
+
+def labeled_protocol(dataset, path, seeds=None):
     if not dataset.class_indices["real"] or not dataset.fake_classes:
         raise ValueError("Labeled 10-shot requires both Real and Fake audio")
     if any(row["label"] is None for row in dataset.records):
         raise ValueError("Labeled evaluation requires every label")
-    return load_or_create_manifest(dataset, path, 10, DEV_SEEDS)
+    chosen = list(DEV_SEEDS if seeds is None else seeds)
+    if (not chosen or any(type(seed) is not int or isinstance(seed, bool) or seed <= 0 for seed in chosen)
+            or len(set(chosen)) != len(chosen)):
+        raise ValueError("Labeled seeds must be unique positive integers")
+    return load_or_create_manifest(dataset, path, 10, chosen)
 
 
 def unlabeled_protocol(dataset, support_ids, query_ids, path):

@@ -13,7 +13,8 @@ from data.external_manifest import (directory_records, load_input_mapping, load_
                                     read_manifest, resolve_input_mapping)
 from engine.checkpoint import checkpoint_sha256, load_checkpoint, resolve_checkpoint
 from engine.evaluator import evaluate
-from engine.external_protocol import labeled_protocol, unlabeled_protocol
+from data.evaluation_manifest import DEV_SEEDS
+from engine.external_protocol import labeled_protocol, parse_external_seeds, unlabeled_protocol
 from models.fs_lprf_model import FSLPRF
 from utils.config import common_parser, load_config
 
@@ -36,6 +37,9 @@ def build_parser():
     parser.add_argument("--checkpoint", required=True, help="Explicit checkpoint FILE; never implicit 'best'")
     parser.add_argument("--output-dir", required=True, help="New, separate evaluation directory (must not exist)")
     parser.add_argument("--shot", type=int, choices=[10], default=10)
+    parser.add_argument("--seeds", default="42",
+                        help="Labeled Support seeds. Development default: 42. "
+                             "Official five-seed paper run: 17,42,71,100,123")
     return parser
 
 
@@ -121,6 +125,12 @@ def write_inputs(path, records):
 
 
 def run(args):
+    if args.mode == "labeled":
+        seeds = parse_external_seeds(args.seeds)
+    elif args.seeds != "42":
+        raise ValueError("Unlabeled evaluation uses the supplied Support once; --seeds applies only to labeled sampling")
+    else:
+        seeds = None
     started = time.perf_counter()
     cfg = load_config(args.config, args.set)
     if args.checkpoint == "best":
@@ -151,9 +161,24 @@ def run(args):
         report["inputs_sha256"] = checkpoint_sha256(out / "inputs.csv")
         ds = ExternalDataset(records, group_by=args.group_by, identity=report["dataset_identity"])
         protocol_path = out / "episode_manifest.json"
-        manifest = (labeled_protocol(ds, protocol_path) if args.mode == "labeled" else
+        manifest = (labeled_protocol(ds, protocol_path, seeds) if args.mode == "labeled" else
                     unlabeled_protocol(ds, supports, queries, protocol_path))
-        report.update(seeds=manifest["seeds"], episode_manifest_sha256=checkpoint_sha256(protocol_path))
+        report.update(seeds=manifest["seeds"], episode_manifest_sha256=checkpoint_sha256(protocol_path),
+                      official_five_seed=list(manifest["seeds"]) == list(DEV_SEEDS))
+        if args.mode == "labeled":
+            report["aggregation"] = "single_seed" if len(manifest["seeds"]) == 1 else "mean_std"
+        seed_key = str(manifest["seeds"][0])
+        manifest_summary = dict(
+            event="manifest_ready", utterances=len(records), classes=list(ds.fake_classes),
+            class_counts={name: len(indices) for name, indices in ds.class_indices.items()},
+            seeds=manifest["seeds"], aggregation=report.get("aggregation", "unlabeled"),
+            official_five_seed=report["official_five_seed"])
+        if args.mode == "labeled":
+            manifest_summary["support_per_class"] = {name: len(manifest["supports"][seed_key][name]) for name in manifest["classes"]}
+            manifest_summary["query_per_class"] = {name: len(manifest["queries"][name]) for name in manifest["classes"]}
+        else:
+            manifest_summary["query_count"] = len(manifest["queries"]["query"])
+        print(json.dumps(manifest_summary, ensure_ascii=False), flush=True)
         save()
         model = FSLPRF(cfg)
         payload = load_checkpoint(checkpoint, model)

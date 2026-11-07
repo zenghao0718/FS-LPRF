@@ -18,7 +18,7 @@ from data.external_manifest import load_label_mapping, read_manifest, validate_l
 from data.loaders import ReusableAudioLoader
 from data.randomness import sample_rng
 from engine.evaluator import build_support_tasks, evaluate, extract_support_features, feature_batches
-from engine.external_protocol import labeled_protocol, unlabeled_protocol
+from engine.external_protocol import labeled_protocol, parse_external_seeds, unlabeled_protocol
 from methods.inference import kshot_scores, kshot_task, predict
 from utils.metrics import binary_metrics
 from test_evaluation import FeatureDataset, FeatureModel
@@ -425,6 +425,83 @@ def test_unlabeled_nonfinite_scores_raise(tmp_path, config):
 
 def test_zero_threshold_unchanged():
     assert predict(torch.tensor([-1e-8, 0., 1e-8])).tolist() == [0, 1, 1]
+
+
+@pytest.mark.parametrize("text", ["", "42,", "42,42", "0", "-1", "x", "042", "42.0"])
+def test_external_seed_text_rejected(text):
+    with pytest.raises(ValueError):
+        parse_external_seeds(text)
+
+
+def test_external_seed_text_accepts_development_and_paper_protocols():
+    assert parse_external_seeds(None) == [42]
+    assert parse_external_seeds("42") == [42]
+    assert parse_external_seeds(" 17, 42,71,100,123 ") == DEV_SEEDS
+
+
+def test_single_seed_manifest_is_stable_and_keeps_five_seed_support(tmp_path):
+    ds = ExternalDataset(metadata(tmp_path))
+    first = labeled_protocol(ds, tmp_path / "one.json", [42])
+    second = labeled_protocol(ds, tmp_path / "other.json", [42])
+    five = labeled_protocol(ds, tmp_path / "five.json")
+    assert first["seeds"] == [42] == second["seeds"]
+    assert first["supports"] == second["supports"] and first["queries"] == second["queries"]
+    assert first["supports"]["42"] == five["supports"]["42"]
+    assert first["queries"] != five["queries"]
+    for name in first["classes"]:
+        support = set(first["supports"]["42"][name])
+        query = set(first["queries"][name])
+        pool = {ds.uttids[i] for i in ds.class_indices[name]}
+        assert len(support) == 10 and not support & query and support | query == pool
+
+
+def test_single_seed_external_reports_point_metrics(tmp_path, config):
+    ds = FeatureDataset(ExternalDataset(metadata(tmp_path)))
+    manifest = labeled_protocol(ds, tmp_path / "ep.json", [42])
+    result = evaluate(FeatureModel().eval(), ds, manifest, config, tmp_path / "single", "external")
+    assert result["aggregation"] == "single_seed" and result["seed"] == 42
+    assert set(("eer", "auc", "ap", "acc")).issubset(result)
+    assert "mean_eer" not in result and "std_eer" not in result
+    saved = list(csv.DictReader((tmp_path / "single" / "external_metrics.csv").open()))
+    assert len(saved) == 1
+    assert all(float(saved[0][name]) == result[name] for name in ("eer", "auc", "ap", "acc"))
+    assert not (tmp_path / "single" / "external_macro_mean_std.csv").exists()
+    assert not (tmp_path / "single" / "external_per_class_mean_std.csv").exists()
+    five = labeled_protocol(ds, tmp_path / "five.json")
+    five_result = evaluate(FeatureModel().eval(), ds, five, config, tmp_path / "five", "external")
+    assert "mean_eer" in five_result and "std_eer" in five_result
+    assert (tmp_path / "five" / "external_macro_mean_std.csv").is_file()
+
+
+def test_cli_default_seed_reused_across_output_directories(tmp_path, config, monkeypatch, cli):
+    model = FeatureModel()
+    checkpoint = fixture_checkpoint(tmp_path / "training" / "checkpoints" / "step_0800.pt", model, config)
+    rows = metadata(tmp_path, ("real", "A01"))
+    source = write_manifest(tmp_path / "input.csv", [dict(uttid=row["uttid"], audio_path=row["audio_path"],
+                             label=row["raw_label"], attack_id=row["attack_id"]) for row in rows])
+    monkeypatch.setattr(cli, "FSLPRF", lambda cfg: model)
+    actual = cli.ExternalDataset
+    monkeypatch.setattr(cli, "ExternalDataset", lambda *a, **kw: FeatureDataset(actual(*a, **kw)))
+    reports = []
+    for name in ("ckpt_a", "ckpt_b"):
+        args = cli.build_parser().parse_args(["--mode", "labeled", "--manifest", str(source),
+                        "--label-map", "bonafide-spoof", "--checkpoint", str(checkpoint),
+                        "--output-dir", str(tmp_path / name), "--set", "runtime.eval_num_workers=0"])
+        assert args.seeds == "42"
+        reports.append(cli.run(args))
+    assert all(report["seeds"] == [42] and report["aggregation"] == "single_seed" and not report["official_five_seed"]
+               for report in reports)
+    manifests = [json.loads((tmp_path / name / "episode_manifest.json").read_text()) for name in ("ckpt_a", "ckpt_b")]
+    assert manifests[0]["supports"] == manifests[1]["supports"]
+    assert manifests[0]["queries"] == manifests[1]["queries"]
+    scores = []
+    for name in ("ckpt_a", "ckpt_b"):
+        rows = list(csv.DictReader((tmp_path / name / "external_predictions.csv").open()))
+        scores.append([(row["uttid"], row["score"]) for row in rows])
+    assert scores[0] == scores[1]
+    with pytest.raises(ValueError, match="labeled sampling"):
+        cli.run(cli.build_parser().parse_args(["--mode", "unlabeled", "--checkpoint", str(checkpoint),
+                "--output-dir", str(tmp_path / "bad"), "--seeds", "17,42", "--query-dir", "q"]))
 
 
 def test_speechfake_matches_frozen_pre_refactor_evaluator(tmp_path, config):

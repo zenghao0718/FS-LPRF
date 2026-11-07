@@ -138,13 +138,14 @@ label_mapping:
 
 **Attack-aware 是使用攻击标注组织的少样本适配协议，不能宣称为未知攻击盲检测或官方无适配排行榜结果。** 标签定义由用户明确提供，读取器不根据数据集名称解释攻击名称。
 
-抽样完全调用原有 `load_or_create_manifest`：
+抽样完全调用原有 `load_or_create_manifest`。`--seeds` 决定抽哪些 Support；默认 `42`，供当前方法验证使用。正式论文实验显式传入 `17,42,71,100,123`。两种协议都保持 10-shot、Support/Query 不重叠和零阈值指标。SpeechFake 内部 Dev/Test 不读取这个参数，仍使用配置中的五种子。
 
-- shot 固定 10；种子固定 [17,42,71,100,123]。
-- 各种子每类取 10 条 Support；五种子 Support 的并集全部从 Query 排除。
-- 五种子共用相同 Query ID；Support/Query 互不重叠。
+- 每个传入的种子独立用该种子抽样，每类 10 条 Support。
+- Query 排除的是**本次传入种子**的 Support 并集。单种子只排除 10 条；五种子排除最多 50 条。因此单种子 Query 与五种子 Query 不同，结果目录也必须分开。
+- 同一输入顺序、同一 `--seeds` 会得到同一份 Support/Query。每个新输出目录都会保存自己的 `episode_manifest.json`，不同 Checkpoint 可以对照这份清单，不会改写另一份结果。
 - 类顺序为 Real 在前、Fake 排序；类内保持输入行顺序。重排清单可能改变 Support。
-- 每类必须有至少 10 个候选，且并集排除后还存在 Query；每类至少 51 条可保证即使并集达到 50 条也有剩余。
+- 每类必须有至少 10 个候选，且并集排除后还存在 Query。单种子每类至少 11 条；五种子每类至少 51 条才能保证并集达到 50 条后仍有 Query。
+- 单种子报告直接写 EER/AUC/AP/ACC（`external_metrics.csv`）。只有多个种子才写 Mean ± Std，且仅当种子正好是 `17,42,71,100,123` 时记为正式五种子协议。
 - 使用原有 view_tokens 的逐样本裁剪种子；相同 Query ID 不代表跨种子裁剪完全相同。
 
 ## 6. Unlabeled：已标记 Support 与未知 Query
@@ -184,11 +185,21 @@ python scripts/evaluate_external.py \
 
 ```bash
 ASV_ROOT=/root/autodl-tmp/ASVspoof5_extracted
+# 当前方法验证：固定单种子 42。换 Checkpoint 时更换输出目录，不要覆盖已有结果。
 python scripts/evaluate_external.py \
   --mode labeled --manifest "$ASV_ROOT/ASVspoof5.eval.track_1.tsv" \
   --mapping configs/external/asvspoof5.yaml --group-by attack_id \
+  --seeds 42 \
   --checkpoint "$CKPT" --set "model.frontend_path=$FRONTEND" \
-  --output-dir "$RESULTS/asvspoof5_attack_run1"
+  --output-dir "$RESULTS/asvspoof5_attack_seed42_run1"
+
+# 最终论文实验：同一代码，只把种子和输出目录换成五种子正式协议。
+python scripts/evaluate_external.py \
+  --mode labeled --manifest "$ASV_ROOT/ASVspoof5.eval.track_1.tsv" \
+  --mapping configs/external/asvspoof5.yaml --group-by attack_id \
+  --seeds 17,42,71,100,123 \
+  --checkpoint "$CKPT" --set "model.frontend_path=$FRONTEND" \
+  --output-dir "$RESULTS/asvspoof5_attack_five_seed_run1"
 ```
 
 示例 root 为相对于协议文件的 flac_E_eval。协议在额外子目录、使用 dev 的 flac_D 或早期其他列布局时，复制 YAML 并修改 root、列号、column_count 即可，不修改 Python。Track 2 的标签和列语义不同，不能拿 Track 1 配置直接读取。原始 Real 的 bonafide Attack 字段保留，Real/Fake 身份只由 label_mapping 决定。
@@ -199,14 +210,14 @@ SpeechFake 内部 evaluate.py 和外部两种模式共用 `engine.evaluator.eval
 
 原始音频复用 Layer-Wise：第一声道、16 kHz 重采样、静音裁剪、RMS 归一化、4 秒确定性裁剪。旧读取器不支持的多声道重采样由通用外部适配层取第一声道、经内存 float WAV 交回同一读取器。无 RIR/RawBoost，无外部 waveform/特征缓存；data/audio.py 不改动，现有 SpeechFake 缓存身份不因此失效。
 
-分数仍为 `S_fake-S_real`；score >= 0 为 Fake，否则 Real。它不是 Fake 概率。有标签时原样计算 EER/AUC/AP/ACC，ACC 使用零阈值；eer_threshold 仅作 EER 报告，不替换预测阈值。先逐任务宏平均，再对五种子计算 Mean 和总体 Std（ddof=0）；单任务只有一类任务统计，不制造多个 Fake 类。
+分数仍为 `S_fake-S_real`；score >= 0 为 Fake，否则 Real。它不是 Fake 概率。有标签时原样计算 EER/AUC/AP/ACC，ACC 使用零阈值；eer_threshold 仅作 EER 报告，不替换预测阈值。先逐任务宏平均。多个种子再计算 Mean 和总体 Std（ddof=0）；单种子直接报告这一次的 EER/AUC/AP/ACC，不写成 Mean ± Std。单任务只有一类任务统计，不制造多个 Fake 类。
 
 输出包括：
 
 - external_run.json：状态、原始清单 SHA256、输入配置文件 SHA256、实际使用的字段/路径/标签配置、Checkpoint SHA256/step、Git Commit/状态/源码哈希、完整模型配置、CLI 参数、种子和耗时。
 - inputs.csv：全部规范化输入、原始标签与 JSON 元数据；episode_manifest.json 保存完整 Support/Query ID，可联合恢复所有路径与角色。
 - external_predictions.csv：全部 Query Score/Prediction；有标签时另保存真值、原始标签和 Attack ID。
-- 有标签时另有逐种子逐任务、逐任务 Mean/Std 和 Macro 报告；Attack-aware 的 Real Query 每个任务各有评分。
+- 有标签且只有一个种子时，写 `external_metrics.csv` 和 `external_per_class.csv`，直接给出 EER/AUC/AP/ACC。多个种子才写逐任务 Mean/Std 和 Macro Mean/Std。Attack-aware 的 Real Query 每个任务各有评分。
 - failures.jsonl：成功时为空，失败时记录异常链；音频错误含 ID 和路径。失败不会替换样本，部分分数只供排错。
 
 ## 9. 验证与输入边界

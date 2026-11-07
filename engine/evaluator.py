@@ -72,6 +72,21 @@ def _log(logger, message, *args):
         logger.info(message, *args)
 
 
+def _emit_progress(logger, handle, *, seed, stage, done, total, started, last_at):
+    """Status only. Scoring, crops and batch boundaries stay unchanged."""
+    now = time.perf_counter()
+    if last_at[0] and now - last_at[0] < 30 and done < total:
+        return
+    last_at[0] = now
+    elapsed = max(now - started, 1e-9)
+    rate = done / elapsed
+    remaining = (total - done) / rate if rate and done < total else 0.0
+    _log(logger, "PROGRESS seed=%s stage=%s audio=%d/%d rate=%.2f/s eta_seconds=%.0f",
+         seed, stage, done, total, rate, remaining)
+    if handle is not None:
+        handle.flush()
+
+
 def _validate_dev_mode(dataset, manifest, cfg, mode, step):
     if mode not in ("light", "full"):
         raise ValueError("Dev mode must be light or full")
@@ -195,7 +210,25 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
                 seed_dataset = evaluation_view(dataset, cfg, mode or "full", seed)
                 supports = manifest["supports"][str(seed)]
                 with ReusableAudioLoader(seed_dataset, cfg, training=False, seed=seed) as loader:
+                    class_names = ["real"] + list(dataset.fake_classes)
+                    support_count = sum(len(supports[name]) for name in class_names)
+                    query_count = (len(manifest["queries"]["query"]) if unlabeled else
+                                   len(manifest["queries"]["real"]) + sum(len(manifest["queries"][name]) for name in dataset.fake_classes))
+                    planned = support_count + query_count
+                    seen = 0
+                    progress_started = time.perf_counter()
+                    last_progress = [0.0]
+
+                    def tick(stage, count):
+                        nonlocal seen
+                        if not external or count <= 0:
+                            return
+                        seen += count
+                        _emit_progress(logger, handle, seed=seed, stage=stage, done=seen, total=planned,
+                                       started=progress_started, last_at=last_progress)
+
                     support_features = extract_support_features(model, seed_dataset, supports, cfg, seed, loader=loader)
+                    tick("support", support_count)
                     tasks = build_support_tasks(model, support_features, dataset.fake_classes)
                     real_scores = {name: [] for name in dataset.fake_classes}
 
@@ -223,15 +256,19 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
 
                     if unlabeled:
                         for ids, features in feature_batches(model, seed_dataset, manifest["queries"]["query"], cfg, seed, loader=loader):
+                            tick("query", len(ids))
                             record(ids, features, "fake", None)
                         continue
                     for ids, features in feature_batches(model, seed_dataset, manifest["queries"]["real"], cfg, seed, loader=loader):
+                        tick("real_query", len(ids))
                         for name in dataset.fake_classes:
                             real_scores[name].append(record(ids, features, name, 0))
                     seed_rows = []
                     for name in dataset.fake_classes:
-                        fake_scores = [record(ids, features, name, 1) for ids, features in
-                                       feature_batches(model, seed_dataset, manifest["queries"][name], cfg, seed, loader=loader)]
+                        fake_scores = []
+                        for ids, features in feature_batches(model, seed_dataset, manifest["queries"][name], cfg, seed, loader=loader):
+                            tick(name, len(ids))
+                            fake_scores.append(record(ids, features, name, 1))
                         real = np.concatenate(real_scores[name])
                         fake = np.concatenate(fake_scores)
                         values = binary_metrics(np.r_[np.zeros(len(real)), np.ones(len(fake))], np.r_[real, fake])
@@ -247,6 +284,13 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
                         write_csv(output_dir / f"{split}_per_class_seed{seed}.csv", seed_rows)
             if unlabeled:
                 return dict(prediction_count=prediction_count)
+            if external and len(manifest["seeds"]) == 1:
+                point = macros[0]
+                metrics = {name: point[name] for name in METRICS}
+                result = dict(aggregation="single_seed", seed=int(point["seed"]), **metrics, per_class=rows)
+                write_csv(output_dir / "external_metrics.csv", [dict(seed=point["seed"], **metrics)])
+                write_csv(output_dir / "external_per_class.csv", rows)
+                return result
             if split == "dev" and mode is None:
                 write_csv(output_dir / "dev_per_class.csv", rows, append=True)
             summary = mean_std(macros)
