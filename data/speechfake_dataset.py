@@ -56,7 +56,10 @@ def validate_manifest(data_path, split):
                 if uttid == "uttid" or uttid in seen:
                     raise ValueError(f"{split}.{suffix}:{line}: header or duplicate uttid {uttid}")
                 seen.add(uttid)
-                if suffix == "tsv" and not Path(row[1]).is_absolute():
+                # Archived AutoDL identities remain POSIX-absolute on Windows;
+                # keep their strings intact for packaged Test lookup/cache identity.
+                if suffix == "tsv" and not (Path(row[1]).is_absolute() or
+                                             row[1].startswith(LEGACY_SPEECHFAKE_PREFIX)):
                     raise ValueError(f"{uttid}: audio_path must be absolute")
                 if suffix == "txt":
                     if row[4] not in ("bonafide", "spoof"):

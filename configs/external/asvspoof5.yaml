@@ -1,0 +1,27 @@
+# Ordinary input configuration, not a dataset-specific code path.
+# Released Track 1: speaker file gender codec quality source attack_tag attack key reserved.
+# Source: https://zenodo.org/records/14498691/files/README.txt?download=1
+format:
+  delimiter: whitespace
+  header: false
+  column_count: 10
+columns:
+  uttid: 1
+  audio_path: 1
+  label: 8
+  attack_id: 7
+paths:
+  # Relative to the protocol file, not to this YAML file.
+  root: flac_E_eval
+  template: "{value}.flac"
+labels:
+  real: [bonafide]
+  fake: [spoof]
+metadata:
+  speaker: 0
+  gender: 2
+  codec: 3
+  codec_q: 4
+  codec_seed: 5
+  attack_tag: 6
+  reserved: 9

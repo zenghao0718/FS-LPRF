@@ -1,0 +1,153 @@
+{
+  "scope": "Synthetic regression only; frozen output of unmodified evaluator",
+  "baseline_commit": "a56b04efbf97d08d4fbfe98edab7b6016710c314",
+  "prediction_fields": [
+    "uttid",
+    "fake_class",
+    "seed",
+    "label",
+    "score",
+    "prediction"
+  ],
+  "summary": {
+    "mean_eer": 0.5172650829976243,
+    "std_eer": 0.02992427860054232,
+    "metrics": {
+      "eer": {
+        "mean": 0.5172650829976243,
+        "std": 0.02992427860054232
+      },
+      "auc": {
+        "mean": 0.4771124349457188,
+        "std": 0.03548061107283471
+      },
+      "ap": {
+        "mean": 0.5133431600635298,
+        "std": 0.024701147116979544
+      },
+      "acc": {
+        "mean": 0.4802855924018168,
+        "std": 0.02861641517408495
+      }
+    },
+    "per_seed": [
+      {
+        "seed": 17,
+        "eer": 0.5165622830043584,
+        "auc": 0.4648219096961841,
+        "ap": 0.4985193738473094,
+        "acc": 0.4887019030479497
+      },
+      {
+        "seed": 42,
+        "eer": 0.4614892399476399,
+        "auc": 0.546280941249419,
+        "ap": 0.5592874686676859,
+        "acc": 0.5312025012475304
+      },
+      {
+        "seed": 71,
+        "eer": 0.5399994603102874,
+        "auc": 0.4615129294646187,
+        "ap": 0.506496602243302,
+        "acc": 0.46359408857040335
+      },
+      {
+        "seed": 100,
+        "eer": 0.5459626969610503,
+        "auc": 0.44498997698274173,
+        "ap": 0.48744715925231885,
+        "acc": 0.44793373420000254
+      },
+      {
+        "seed": 123,
+        "eer": 0.5223117347647859,
+        "auc": 0.46795641733563054,
+        "ap": 0.514965196307033,
+        "acc": 0.46999573494319813
+      }
+    ]
+  },
+  "predictions": [
+    {
+      "uttid": "test/real/0",
+      "fake_class": "TTS__g00",
+      "seed": "17",
+      "label": "0",
+      "score": "0.10709495097398758",
+      "prediction": "1"
+    },
+    {
+      "uttid": "test/TTS__g00/0",
+      "fake_class": "TTS__g00",
+      "seed": "17",
+      "label": "1",
+      "score": "-0.21235059201717377",
+      "prediction": "0"
+    },
+    {
+      "uttid": "test/real/0",
+      "fake_class": "TTS__g00",
+      "seed": "42",
+      "label": "0",
+      "score": "-0.16099198162555695",
+      "prediction": "0"
+    },
+    {
+      "uttid": "test/TTS__g00/0",
+      "fake_class": "TTS__g00",
+      "seed": "42",
+      "label": "1",
+      "score": "-0.08744227141141891",
+      "prediction": "0"
+    },
+    {
+      "uttid": "test/real/0",
+      "fake_class": "TTS__g00",
+      "seed": "71",
+      "label": "0",
+      "score": "0.1187160536646843",
+      "prediction": "1"
+    },
+    {
+      "uttid": "test/TTS__g00/0",
+      "fake_class": "TTS__g00",
+      "seed": "71",
+      "label": "1",
+      "score": "-0.45522797107696533",
+      "prediction": "0"
+    },
+    {
+      "uttid": "test/real/0",
+      "fake_class": "TTS__g00",
+      "seed": "100",
+      "label": "0",
+      "score": "0.25003916025161743",
+      "prediction": "1"
+    },
+    {
+      "uttid": "test/TTS__g00/0",
+      "fake_class": "TTS__g00",
+      "seed": "100",
+      "label": "1",
+      "score": "-0.2275257110595703",
+      "prediction": "0"
+    },
+    {
+      "uttid": "test/real/0",
+      "fake_class": "TTS__g00",
+      "seed": "123",
+      "label": "0",
+      "score": "-0.15834084153175354",
+      "prediction": "0"
+    },
+    {
+      "uttid": "test/TTS__g00/0",
+      "fake_class": "TTS__g00",
+      "seed": "123",
+      "label": "1",
+      "score": "-0.20402218401432037",
+      "prediction": "0"
+    }
+  ]
+}

@@ -53,6 +53,18 @@ def extract_support_features(model, dataset, supports, cfg, seed, *, loader):
     return {name: torch.stack([by_id[uid] for uid in supports[name]]) for name in classes}
 
 
+def build_support_tasks(model, support_features, fake_classes):
+    """Shared task construction for SpeechFake and both external modes."""
+    real_support = support_features["real"].to(model.device)
+    tasks = {}
+    for name in fake_classes:
+        fake_support = support_features[name].to(model.device)
+        features = torch.cat([real_support, fake_support])
+        labels = torch.tensor([0] * len(real_support) + [1] * len(fake_support), device=model.device)
+        tasks[name] = kshot_task(features, labels)
+    return tasks
+
+
 def _log(logger, message, *args):
     if logger is None:
         print(message % args if args else message, flush=True)
@@ -125,6 +137,13 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
     """
     if dataset.do_augment:
         raise ValueError("Evaluation must not augment audio")
+    external = split == "external"
+    unlabeled = manifest.get("kind") == "external_unlabeled"
+    if unlabeled and not external:
+        raise ValueError("Unlabeled Query is restricted to external evaluation")
+    if external and (getattr(dataset, "cache_mode", "none") != "none"
+                     or cfg["data"].get("external_cache_mode", "none") != "none"):
+        raise ValueError("External evaluation must read original audio without caches")
     if split == "test" and (
             cfg["data"].get("test_cache_mode", "none") != "none" or getattr(dataset, "cache_mode", "none") != "none"):
         raise ValueError("Test must read original WAVs without any cache")
@@ -139,11 +158,13 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
     started = time.perf_counter()
     report_temp = None
     prefix = f"[{mode.upper()} DEV step={step:04d}]" if mode is not None else None
-    query_counts = {name: dict(real_query_count=len(manifest["queries"]["real"]),
+    query_counts = {} if unlabeled else {name: dict(real_query_count=len(manifest["queries"]["real"]),
                                fake_query_count=len(manifest["queries"][name]))
                     for name in dataset.fake_classes}
     if mode is None:
         prediction_path = output_dir / (f"dev_predictions_step{step}.csv" if split == "dev" else "test_predictions.csv")
+        if external:
+            prediction_path = output_dir / "external_predictions.csv"
     else:
         destination = output_dir / mode
         destination.mkdir(parents=True, exist_ok=True)
@@ -158,6 +179,11 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
              min(value["fake_query_count"] for value in query_counts.values()),
              max(value["fake_query_count"] for value in query_counts.values()), destination)
     fields = ["uttid", "fake_class", "seed", "label", "score", "prediction"]
+    if external:
+        fields += ["audio_path", "raw_label", "attack_id"]
+        if unlabeled:
+            fields = [field for field in fields if field not in ("label", "raw_label", "attack_id")]
+    prediction_count = 0
     # Restore training RNG even if audio decoding/metrics fail.
     try:
         with preserved_rng(), prediction_path.open("w", newline="", encoding="utf-8") as handle:
@@ -170,24 +196,35 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
                 supports = manifest["supports"][str(seed)]
                 with ReusableAudioLoader(seed_dataset, cfg, training=False, seed=seed) as loader:
                     support_features = extract_support_features(model, seed_dataset, supports, cfg, seed, loader=loader)
-                    real_support = support_features["real"].to(model.device)
-                    tasks = {}
-                    # Encode shared Real Support once; each Fake task still builds its own alpha.
-                    for name in dataset.fake_classes:
-                        fake_support = support_features[name].to(model.device)
-                        features = torch.cat([real_support, fake_support])
-                        labels = torch.tensor([0] * len(real_support) + [1] * len(fake_support), device=model.device)
-                        tasks[name] = kshot_task(features, labels)
+                    tasks = build_support_tasks(model, support_features, dataset.fake_classes)
                     real_scores = {name: [] for name in dataset.fake_classes}
 
                     def record(ids, features, name, label):
+                        nonlocal prediction_count
                         scores = kshot_scores(features, *tasks[name]).cpu()
+                        if external and not torch.isfinite(scores).all():
+                            raise ValueError(f"Non-finite Query scores: seed={seed}, task={name}, uttids={ids}")
                         predictions = predict(scores)
-                        writer.writerows(dict(uttid=uid, fake_class=name, seed=seed,
-                                               label=label, score=float(score), prediction=int(prediction))
-                                         for uid, score, prediction in zip(ids, scores, predictions))
+                        if not external:
+                            writer.writerows(dict(uttid=uid, fake_class=name, seed=seed,
+                                                   label=label, score=float(score), prediction=int(prediction))
+                                             for uid, score, prediction in zip(ids, scores, predictions))
+                            return scores.numpy()
+                        for uid, score, prediction in zip(ids, scores, predictions):
+                            row = dict(uttid=uid, fake_class=name, seed=seed, label=label,
+                                       score=float(score), prediction=int(prediction))
+                            source = dataset.by_id[uid]
+                            row.update(audio_path=source["audio_path"], raw_label=source.get("raw_label", ""),
+                                       attack_id=source.get("attack_id", ""),
+                                       prediction="fake" if int(prediction) else "real")
+                            writer.writerow({field: row[field] for field in fields})
+                            prediction_count += 1
                         return scores.numpy()
 
+                    if unlabeled:
+                        for ids, features in feature_batches(model, seed_dataset, manifest["queries"]["query"], cfg, seed, loader=loader):
+                            record(ids, features, "fake", None)
+                        continue
                     for ids, features in feature_batches(model, seed_dataset, manifest["queries"]["real"], cfg, seed, loader=loader):
                         for name in dataset.fake_classes:
                             real_scores[name].append(record(ids, features, name, 0))
@@ -206,14 +243,20 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
                         rows.append(row)
                         seed_rows.append(row)
                     macros.append(dict(seed=seed, **macro_metrics(seed_rows)))
-                    if split == "test":
-                        write_csv(output_dir / f"test_per_class_seed{seed}.csv", seed_rows)
+                    if split in ("test", "external"):
+                        write_csv(output_dir / f"{split}_per_class_seed{seed}.csv", seed_rows)
+            if unlabeled:
+                return dict(prediction_count=prediction_count)
             if split == "dev" and mode is None:
                 write_csv(output_dir / "dev_per_class.csv", rows, append=True)
             summary = mean_std(macros)
             result = dict(mean_eer=summary["eer"]["mean"], std_eer=summary["eer"]["std"],
                           metrics=summary, per_seed=macros)
             if mode is None:
+                if external:
+                    class_summaries = _class_summary(rows, dataset.fake_classes, step, mode)
+                    write_csv(output_dir / "external_per_class_mean_std.csv", class_summaries)
+                    result.update(per_class=rows, per_class_summary=class_summaries)
                 write_csv(output_dir / f"{split}_macro_per_seed.csv",
                           [dict(step=step, **row) if step is not None else row for row in macros], append=split == "dev")
                 write_csv(output_dir / f"{split}_macro_mean_std.csv",
