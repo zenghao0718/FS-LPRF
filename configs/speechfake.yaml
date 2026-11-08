@@ -9,6 +9,12 @@ data:
   trim_silence: true
   do_augment: true
   augment_type: rawboost
+  # Train-only codec round-trip. enabled=false reproduces the original baseline.
+  codec_augment:
+    enabled: false
+    probability: 0.5
+    codecs: [mp3, opus, amr, encodec]
+    sample_rate: 16000
 
 model:
   frontend: XLSR

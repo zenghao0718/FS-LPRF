@@ -70,6 +70,22 @@ python -m pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/s
 python -m pip check
 ```
 
+`data.codec_augment.enabled` 默认是 `false`。关闭时不构造编解码器，Baseline 训练、Dev 和 Test 不依赖下面的系统库。要打开在线 Codec Augmentation，或让对应单测不再跳过，还需要 Ubuntu 22.04 上的 ffmpeg 与 AMR 库，以及 `requirements.txt` 里的 `encodec==0.1.1`：
+
+```bash
+apt-get update
+apt-get install -y ffmpeg libmp3lame0 libopus0 libopencore-amrnb0 libopencore-amrwb0 libvo-amrwbenc0
+python - <<'PY'
+from data.codec_augmentation import probe_codecs
+report = probe_codecs()
+for name, row in report.items():
+    print(f"{name}: available={row['available']} implementation={row['implementation']} reason={row['reason']}")
+assert all(row["available"] for row in report.values())
+PY
+```
+
+四条路径都是真实编解码：MP3 用 ffmpeg 的 `libmp3lame`，Opus 用 ffmpeg 的 `libopus`，AMR-NB/AMR-WB 用 OpenCORE 与 VisualOn 的动态库，EnCodec 用 `encodec==0.1.1` 的 24 kHz 预训练模型。第一次启用 EnCodec 时，`EncodecModel.encodec_model_24khz()` 会把 `https://dl.fbaipublicfiles.com/encodec/v0/encodec_24khz-d7cc33bc.th` 下载到 `~/.cache/torch/hub/checkpoints/`。这是在线增强，不是离线波形缓存。
+
 ## 3. 权重与 RIR 资源
 
 ```bash

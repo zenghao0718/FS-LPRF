@@ -3,6 +3,8 @@ import copy
 from pathlib import Path
 import yaml
 
+from data.codec_augmentation import CODEC_AUGMENT_DEFAULTS, validate_codec_settings
+
 SEEDS = [17, 42, 71, 100, 123]
 
 CACHE_DEFAULTS = dict(root="cache/fs_lprf", schema_version=1, feature_dtype="float32",
@@ -13,6 +15,11 @@ CACHE_DEFAULTS = dict(root="cache/fs_lprf", schema_version=1, feature_dtype="flo
 def add_pipeline_defaults(cfg):
     for split, default in (("train", "waveform"), ("dev", "waveform"), ("test", "none")):
         cfg["data"].setdefault(f"{split}_cache_mode", default)
+    codec = cfg["data"].setdefault("codec_augment", {})
+    if not isinstance(codec, dict):
+        raise ValueError("data.codec_augment must be a mapping")
+    for key, value in CODEC_AUGMENT_DEFAULTS.items():
+        codec.setdefault(key, copy.deepcopy(value))
     cache = cfg.setdefault("cache", {})
     for key, value in CACHE_DEFAULTS.items():
         cache.setdefault(key, value)
@@ -107,6 +114,8 @@ def validate_config(cfg):
         raise ValueError("In-repository cache.root must be under a Git-ignored cache/output directory")
     if type(cache["warn_if_estimated_gb_above"]) not in (int, float) or cache["warn_if_estimated_gb_above"] <= 0:
         raise ValueError("cache.warn_if_estimated_gb_above must be positive")
+    if "codec_augment" in cfg["data"]:
+        validate_codec_settings(cfg["data"]["codec_augment"])
 
 
 def common_parser(description):

@@ -6,6 +6,7 @@ import os
 import torch
 from .audio import GeneralFAD
 from .augmentation import RawBoostAudioAugmentation
+from .codec_augmentation import CodecAugmentor, codec_settings
 
 
 class ConfiguredRawBoost(RawBoostAudioAugmentation):
@@ -86,8 +87,16 @@ class SpeechFakeDataset(GeneralFAD):
         options["do_augment"] = False
         super().__init__(Namespace(**options), split, train_mode=train_mode)
         self.do_augment = train_mode and data_config["do_augment"]
+        self.do_codec_augment = False
+        self.codec_augmentor = None
         self.cache_mode, self.cache_reader = "none", None
         self.feature_caches = {}
+        if train_mode:
+            settings = codec_settings(data_config)
+            if settings["enabled"]:
+                self.codec_augmentor = CodecAugmentor(probability=settings["probability"], codecs=settings["codecs"],
+                                                      sample_rate=settings["sample_rate"])
+                self.do_codec_augment = True
         if self.do_augment:
             rir_root = data_config.get("rir_root") or os.environ.get("FS_LPRF_RIR_ROOT")
             if not rir_root:
@@ -108,6 +117,8 @@ class SpeechFakeDataset(GeneralFAD):
             raise ValueError("Cache mode/split does not match the dataset")
         if mode == "xlsr_feature" and self.do_augment:
             raise ValueError("Cached features must not be augmented again")
+        if mode == "xlsr_feature" and self.do_codec_augment:
+            raise ValueError("Codec Augmentation applies before the frontend and cannot use cached XLS-R features")
         self.cache_mode, self.cache_reader = mode, reader
         return self
 
@@ -128,6 +139,21 @@ class SpeechFakeDataset(GeneralFAD):
             return super().load_preprocessed_waveform(uttid)
         finally:
             self.uttid2path[uttid] = stored
+
+    def get_audio(self, uttid):
+        # audio.py stays unchanged so the waveform-cache binding remains valid.
+        # Disabled codec augmentation must call the original method and consume no extra RNG.
+        if not (self.train_mode and self.do_codec_augment):
+            return super().get_audio(uttid)
+        audio = self.load_preprocessed_waveform(uttid)
+        audio = self.codec_augmentor(audio)
+        if self.fix_len:
+            audio = self.sample_segment(audio)
+        else:
+            audio = audio[:, :self.max_len]
+        if self.do_augment and self.train_mode:
+            audio = self.augmentor(audio)
+        return audio
 
     @staticmethod
     def collate_fn(batch):

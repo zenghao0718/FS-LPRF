@@ -187,6 +187,9 @@ def build_dataset_cache(dataset, cfg, identity, *, model=None, resume=False, for
         raise ValueError("Build caches from the original WAV/preprocessing path")
     if identity["mode"] == "waveform" and dataset.do_augment:
         raise ValueError("Waveform cache generation must never initialize augmentation")
+    codec = cfg["data"].get("codec_augment") or {}
+    if identity["mode"] == "xlsr_feature" and isinstance(codec, dict) and codec.get("enabled"):
+        raise ValueError("Feature-cache generation cannot apply Codec Augmentation; disable data.codec_augment.enabled")
     was_training = model.training if model is not None else None
     try:
         with preserved_rng(), CacheWriter(target, identity, cfg["cache"]["shard_size"], resume=resume,

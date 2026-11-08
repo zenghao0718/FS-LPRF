@@ -45,6 +45,10 @@ def atomic_json(path, payload):
 def make_run_identity(cfg, manifest_hash, light_manifest_hash, train_fingerprint, cache_bindings=None):
     from data.randomness import RNG_SCHEMA_VERSION
     config = json.loads(json.dumps(cfg))
+    # A disabled codec block does not change samples, so existing baseline runs still match.
+    codec = config.get("data", {}).get("codec_augment")
+    if isinstance(codec, dict) and codec.get("enabled") is not True:
+        config["data"].pop("codec_augment", None)
     for key in ("device", "num_workers", "train_num_workers", "eval_num_workers", "persistent_train_workers", "persistent_eval_workers",
                 "prefetch_factor", "pin_memory", "worker_torch_num_threads"):
         config["runtime"].pop(key, None)
