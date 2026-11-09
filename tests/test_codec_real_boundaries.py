@@ -72,3 +72,19 @@ def test_residual_delay_check_rejects_a_bad_alignment():
     delayed = np.pad(audio, (1600, 0))[:len(audio)]
     with pytest.raises(RuntimeError, match="residual codec delay"):
         alignment_diagnostics(audio, delayed)
+
+
+@pytest.mark.parametrize("length", [3, 158399, 158400, 158401, 159999, 160000, 160001,
+                                    316799, 316800, 316801, 480123])
+def test_real_encodec_official_whole_wave_old_segment_boundaries(length):
+    augmentor = available_augmentor("encodec")
+    model = augmentor._load_encodec()
+    assert model.segment is None and model.sample_rate == 24000 and model.channels == 1
+    t = np.arange(length, dtype=np.float32) / 16000
+    source = (.15 * np.sin(2*np.pi*(130*t+23*t*t)) + .06*np.sin(2*np.pi*680*t)).astype(np.float32)
+    for spec in augmentor.choices["encodec"]:
+        restored, info = augmentor.apply_array(source, spec)
+        assert restored.shape == source.shape and restored.dtype == np.float32
+        assert np.isfinite(restored).all() and np.max(np.abs(restored)) <= 1
+        assert info["pad_samples"] == 0 and info["clipping_fraction"] <= .01
+        alignment_diagnostics(source, restored)

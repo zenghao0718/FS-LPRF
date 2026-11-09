@@ -22,6 +22,27 @@ from utils.seed import capture_rng
 from test_pipeline_workers import rng_equal
 
 
+def test_seed42_assignments_match_pre_official_default_fix():
+    from data.codec_cache import BUILDER_VERSION
+    from data.codec_augmentation import (MP3_BITRATES_KBPS, OPUS_BITRATES_KBPS, AMR_NB_MODES,
+                                         AMR_WB_MODES, ENCODEC_BANDWIDTHS_KBPS)
+    choices = dict(mp3=[("mp3", p) for p in MP3_BITRATES_KBPS],
+                   opus=[("opus", p) for p in OPUS_BITRATES_KBPS],
+                   amr=[("amr_nb", p) for p, _ in AMR_NB_MODES] + [("amr_wb", p) for p, _ in AMR_WB_MODES],
+                   encodec=[("encodec", p) for p in ENCODEC_BANDWIDTHS_KBPS])
+    identity = dict(codec_parameters=dict(build_seed=42, codecs=list(choices)),
+                    codec_report=dict(choices={family: [dict(variant=v, param=p) for v, p in specs]
+                                               for family, specs in choices.items()}))
+    # Golden values captured from a1d149a before changing the EnCodec defaults.
+    expected = [("mp3", "mp3", 96), ("amr", "amr_wb", 0), ("opus", "opus", 32),
+                ("encodec", "encodec", 3.0), ("mp3", "mp3", 64), ("encodec", "encodec", 3.0),
+                ("mp3", "mp3", 128), ("mp3", "mp3", 16), ("mp3", "mp3", 64), ("mp3", "mp3", 48)]
+    assert BUILDER_VERSION == 1
+    assert [choose_spec(identity, f"fixture_{i}") for i in range(10)] == expected
+    failure_uid = "47954871497225c828cc7fdf41e5ddf3f405c382bb275347040f16a714433188"
+    assert choose_spec(identity, failure_uid) == ("amr", "amr_nb", 7)
+
+
 def fake_backend(spec, audio):
     return audio * np.float32(.5), {"payload": b"unit-test-codec"}
 
@@ -104,6 +125,28 @@ def test_smoke_is_explicit_stratified_and_never_a_formal_training_input(source_c
     for i in (0, 1, 12, 63):
         uid = ds.uttids[i]
         assert choose_spec(reader.identity, uid) == choose_spec(reader.identity, uid)
+
+
+def test_legacy_segmented_cache_rejected_without_backend_probe(source_cache, monkeypatch):
+    cfg, _, source, _ = source_cache
+    current, identity = build(source_cache, smoke=True, limit=33)
+    legacy_identity = copy.deepcopy(identity)
+    # SHA256 of codec_augmentation.py in a1d149a, which set segment=10.0/overlap=.01.
+    legacy_identity["implementation_sha256"]["codec_augmentation.py"] = (
+        "a5f8c946eec7baefb00f161814f13559ebe9c02ca58a6080af3f69ade0870341")
+    legacy_identity["codec_report"]["environment"]["encodec_parameters"] = dict(
+        sample_rate=24000, channels=1, segment=10.0, overlap=.01)
+    legacy_path = current.path.with_name("legacy_segmented")
+    with CacheWriter(legacy_path, legacy_identity, 17) as writer:
+        for uid in legacy_identity["uttids"]:
+            writer.add(uid, current.get(uid), codec_record=current.rows[uid]["codec"])
+        writer.finish().close()
+    monkeypatch.setattr("data.codec_augmentation.probe_codecs", Mock(side_effect=AssertionError("No backend at read time")))
+    with pytest.raises(ValueError, match="implementation identity mismatch"):
+        open_codec_cache(source, cfg, path=legacy_path, allow_smoke=True)
+    assert legacy_path.exists()  # Rejection never overwrites/removes the old cache.
+    with open_codec_cache(source, cfg, path=current.path, allow_smoke=True) as valid:
+        assert valid.identity["builder_version"] == legacy_identity["builder_version"] == 1
 
 
 def test_interruption_resumes_committed_shards_and_refuses_changed_identity(source_cache):

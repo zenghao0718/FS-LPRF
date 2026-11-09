@@ -2,6 +2,9 @@
 import copy
 import shutil
 import subprocess
+import sys
+import types
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
@@ -15,6 +18,119 @@ from data.speechfake_dataset import SpeechFakeDataset
 from engine.pipeline_benchmark import configure_benchmark_mode
 from engine.validation_schedule import make_run_identity
 from utils.config import load_config
+
+
+@pytest.fixture
+def official_encodec_mock(monkeypatch):
+    """Contract double only: no pretrained codec or real-audio validation here."""
+    import data.codec_augmentation as module
+
+    class WholeWaveModel(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.tensor(.3))
+            self.sample_rate, self.channels = 24000, 1
+            self._segment, self._overlap = None, .37
+            self.bandwidths, self.encoded, self.decoded = [], [], []
+
+        @property
+        def segment(self):
+            return self._segment
+
+        @property
+        def overlap(self):
+            return self._overlap
+
+        def set_target_bandwidth(self, value):
+            self.bandwidth = value
+            self.bandwidths.append(value)
+
+        def encode(self, waveform):
+            assert self.segment is None and not torch.is_grad_enabled()
+            self.encoded.append((self.bandwidth, tuple(waveform.shape)))
+            return [(torch.zeros(1, 2, 3, dtype=torch.int64), waveform)]
+
+        def decode(self, frames):
+            assert len(frames) == 1 and not torch.is_grad_enabled()
+            self.decoded.append(self.bandwidth)
+            # Simulate decoder latency and excess samples, without overlap-add.
+            return torch.nn.functional.pad(frames[0][1] * .8, (24, 37))
+
+    model = WholeWaveModel()
+    factory = Mock(return_value=model)
+    package = types.ModuleType("encodec")
+    package.__path__ = []
+    package.EncodecModel = types.SimpleNamespace(encodec_model_24khz=factory)
+    utils = types.ModuleType("encodec.utils")
+    def convert_audio(waveform, origin, target, channels):
+        assert waveform.shape[0] == channels == 1
+        length = (waveform.shape[-1] * target + origin - 1) // origin
+        return torch.nn.functional.interpolate(waveform[None], size=length, mode="linear",
+                                               align_corners=False)[0]
+    utils.convert_audio = convert_audio
+    monkeypatch.setitem(sys.modules, "encodec", package)
+    monkeypatch.setitem(sys.modules, "encodec.utils", utils)
+    monkeypatch.setattr(module, "_PRESET_CACHE", {})
+    monkeypatch.setattr(module, "probe_codecs", lambda: {
+        "encodec": dict(available=True, implementation="contract mock, not real EnCodec", reason=None)})
+    return model, factory
+
+
+def test_encodec_uses_official_whole_wave_defaults_and_actual_metadata(official_encodec_mock):
+    from data.codec_augmentation import ENCODEC_BANDWIDTHS_KBPS
+    model, factory = official_encodec_mock
+    augmentor = CodecAugmentor(codecs=["encodec"])
+    factory.assert_called_once_with()
+    assert model.segment is None and model.overlap == .37  # Read-only: any assignment would fail.
+    assert not model.training and all(not p.requires_grad for p in model.parameters())
+    assert model.bandwidths[0] == 6.0
+    assert set(model.decoded) == set(ENCODEC_BANDWIDTHS_KBPS)
+    report = augmentor.report()
+    assert report["environment"]["encodec_parameters"] == dict(
+        sample_rate=24000, channels=1, segment=None, overlap=.37, overlap_active=False)
+    assert len(report["environment"]["encodec_weights_sha256"]) == 64
+    assert [row["param"] for row in report["choices"]["encodec"]] == list(ENCODEC_BANDWIDTHS_KBPS)
+    assert all(row["parameters"]["segment"] is None and not row["parameters"]["overlap_active"]
+               for row in report["choices"]["encodec"])
+
+
+@pytest.mark.parametrize("field,value", [("_segment", 10.0), ("sample_rate", 48000), ("channels", 2)])
+def test_encodec_unexpected_model_defaults_fail_without_override(official_encodec_mock, field, value):
+    model, factory = official_encodec_mock
+    setattr(model, field, value)
+    with pytest.raises(RuntimeError, match="Expected official EnCodec.*segment=None"):
+        CodecAugmentor(codecs=["encodec"])
+    assert getattr(model, field) == value
+    factory.assert_called_once_with()
+
+
+@pytest.mark.parametrize("length", [3, 158399, 158400, 158401, 159999, 160000, 160001,
+                                    316799, 316800, 316801, 480123])
+def test_encodec_mock_full_input_guard_delay_and_restore_at_old_boundaries(official_encodec_mock, length):
+    model, _ = official_encodec_mock
+    augmentor = CodecAugmentor(codecs=["encodec"])
+    model.encoded.clear()
+    model.decoded.clear()
+    source = _tone(length)
+    before = source.copy()
+    for spec in augmentor.choices["encodec"]:
+        restored, info = augmentor.apply_array(source, spec)
+        prepared = max(length, 16000) + info["guard_samples"]
+        assert model.encoded[-1] == (spec[2], (1, 1, (prepared * 24000 + 15999) // 16000))
+        assert restored.shape == source.shape and restored.dtype == np.float32
+        assert np.isfinite(restored).all() and np.max(np.abs(restored)) <= 1
+        assert info["pad_samples"] == 0 and info["clipping_fraction"] == 0
+        assert info["input_samples"] == info["output_samples"] == length
+    assert np.array_equal(before, source)
+    assert len(model.encoded) == len(model.decoded) == 5  # One whole-wave encode/decode per bandwidth.
+
+
+def test_encodec_encode_failure_is_visible_without_fallback(official_encodec_mock, monkeypatch):
+    model, _ = official_encodec_mock
+    augmentor = CodecAugmentor(codecs=["encodec"])
+    monkeypatch.setattr(model, "encode", Mock(side_effect=RuntimeError("encode failure")))
+    with pytest.raises(RuntimeError, match="encode failure"):
+        augmentor.apply_array(_tone(), ("encodec", "encodec", 1.5))
 
 
 def test_missing_requested_backend_is_not_silently_dropped(monkeypatch):

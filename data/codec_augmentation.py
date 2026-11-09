@@ -97,6 +97,15 @@ def _engine(available, implementation, reason):
     return dict(available=bool(available), implementation=implementation, reason=reason)
 
 
+def _encodec_model_parameters(model):
+    """Require official 24 kHz mono whole-waveform defaults; never override them."""
+    actual = dict(sample_rate=model.sample_rate, channels=model.channels, segment=model.segment,
+                  overlap=getattr(model, "overlap", None), overlap_active=model.segment is not None)
+    if (actual["sample_rate"], actual["channels"], actual["segment"]) != (24000, 1, None):
+        raise RuntimeError(f"Expected official EnCodec 24 kHz mono model with segment=None; got {actual}")
+    return actual
+
+
 def codec_environment(augmentor):
     """Capture actual executables/libraries and loaded weights, once at preflight."""
     from .cache import file_sha
@@ -132,14 +141,15 @@ def codec_environment(augmentor):
         if not result["amr_libraries"]:
             raise RuntimeError("Cannot identify loaded AMR shared libraries for reproducibility")
     if "encodec" in augmentor.requested and augmentor.backend is None:
+        model = augmentor._load_encodec()
         digest = hashlib.sha256()
-        for name, tensor in sorted(augmentor._load_encodec().state_dict().items()):
+        for name, tensor in sorted(model.state_dict().items()):
             digest.update(name.encode())
             digest.update(str((tensor.dtype, tuple(tensor.shape))).encode())
             digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
         result["encodec_weights_sha256"] = digest.hexdigest()
         result["encodec_weights_hash_method"] = "sorted state_dict names,dtypes,shapes,raw tensor bytes"
-        result["encodec_parameters"] = dict(sample_rate=24000, channels=1, segment=10.0, overlap=0.01)
+        result["encodec_parameters"] = _encodec_model_parameters(model)
     return result
 
 
@@ -401,6 +411,7 @@ class CodecAugmentor:
 
     def _load_encodec(self):
         if self._encodec is not None:
+            _encodec_model_parameters(self._encodec)
             return self._encodec
         if self._encodec_error is not None:
             raise RuntimeError(self._encodec_error)
@@ -410,16 +421,15 @@ class CodecAugmentor:
             with warnings.catch_warnings():
                 warnings.filterwarnings("ignore", message=".*weight_norm.*")
                 model = EncodecModel.encodec_model_24khz()
+            _encodec_model_parameters(model)
             model.set_target_bandwidth(6.0)
-            model.segment = 10.0
-            model.overlap = 0.01
             model.eval()
             for parameter in model.parameters():
                 parameter.requires_grad_(False)
             self._encodec = model
             return model
         except Exception as error:
-            self._encodec_error = f"EnCodec weights could not be loaded: {error}"
+            self._encodec_error = f"EnCodec 24 kHz model could not be initialized: {error}"
             raise RuntimeError(self._encodec_error) from error
 
 
@@ -501,7 +511,7 @@ def preset_parameters(spec):
         details.update(mode=param, bitrate_kbps=dict(AMR_NB_MODES if variant == "amr_nb" else AMR_WB_MODES)[param],
                        codec_sample_rate=8000 if variant == "amr_nb" else 16000, dtx=False)
     elif variant == "encodec":
-        details.update(bandwidth_kbps=param, codec_sample_rate=24000, segment=10.0, overlap=.01)
+        details.update(bandwidth_kbps=param, codec_sample_rate=24000, segment=None, overlap_active=False)
     return details
 
 

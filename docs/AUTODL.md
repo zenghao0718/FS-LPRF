@@ -84,7 +84,7 @@ assert all(row["available"] for row in report.values())
 PY
 ```
 
-四条路径都是真实编解码：MP3 用 ffmpeg 的 `libmp3lame`，Opus 用 ffmpeg 的 `libopus`，AMR-NB/AMR-WB 用 OpenCORE 与 VisualOn 的动态库，EnCodec 用 `encodec==0.1.1` 的 24 kHz 预训练模型。第一次启用 EnCodec 时，`EncodecModel.encodec_model_24khz()` 会把 `https://dl.fbaipublicfiles.com/encodec/v0/encodec_24khz-d7cc33bc.th` 下载到 `~/.cache/torch/hub/checkpoints/`。这是在线增强，不是离线波形缓存。
+四条路径都是真实编解码：MP3 用 ffmpeg 的 `libmp3lame`，Opus 用 ffmpeg 的 `libopus`，AMR-NB/AMR-WB 用 OpenCORE 与 VisualOn 的动态库，EnCodec 用 `encodec==0.1.1` 的官方 24 kHz 单声道预训练模型，保留 `segment=None` 整段编解码，不自行设置分段/overlap，不做多片段拼接。第一次启用 EnCodec 时，`EncodecModel.encodec_model_24khz()` 会把 `https://dl.fbaipublicfiles.com/encodec/v0/encodec_24khz-d7cc33bc.th` 下载到 `~/.cache/torch/hub/checkpoints/`。整段长语音存在内存和速度风险，须真实测量；旧 10 秒分段 Smoke Cache 不兼容，需新目录重建。原失败样本→边界/最长波形→新 2000 条 Smoke→六组 Benchmark 的验收与命令见 [OFFLINE_CODEC.md](OFFLINE_CODEC.md)。
 
 ## 3. 权重与 RIR 资源
 
