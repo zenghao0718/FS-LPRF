@@ -11,6 +11,10 @@ disabled, which consumes no RNG and leaves the baseline crop unchanged.
 """
 from functools import lru_cache
 import ctypes
+import hashlib
+import importlib.metadata
+import platform
+from pathlib import Path
 import shutil
 import subprocess
 import time
@@ -18,8 +22,9 @@ import time
 import numpy as np
 import torch
 
-CODEC_AUGMENT_DEFAULTS = dict(enabled=False, probability=0.5,
-                              codecs=["mp3", "opus", "amr", "encodec"], sample_rate=16000)
+CODEC_AUGMENT_DEFAULTS = dict(enabled=False, mode="online", probability=0.5,
+                              codecs=["mp3", "opus", "amr", "encodec"], sample_rate=16000,
+                              build_seed=42, offline_cache_root="/root/autodl-tmp/fs_lprf_codec_cache")
 KNOWN_CODECS = ("mp3", "opus", "amr", "encodec")
 MP3_BITRATES_KBPS = (16, 32, 48, 64, 96, 128)
 OPUS_BITRATES_KBPS = (6, 8, 12, 16, 24, 32)
@@ -51,6 +56,12 @@ def codec_settings(data_config):
 
 
 def validate_codec_settings(settings):
+    if settings.get("mode", "online") not in ("online", "offline"):
+        raise ValueError("data.codec_augment.mode must be online or offline")
+    if type(settings.get("build_seed", 42)) is not int or settings.get("build_seed", 42) < 0:
+        raise ValueError("data.codec_augment.build_seed must be a nonnegative integer")
+    if not isinstance(settings.get("offline_cache_root", "default"), str) or not settings.get("offline_cache_root", "default"):
+        raise ValueError("data.codec_augment.offline_cache_root must be a nonempty path")
     if type(settings.get("enabled")) is not bool:
         raise ValueError("data.codec_augment.enabled must be a boolean")
     probability = settings.get("probability")
@@ -61,6 +72,8 @@ def validate_codec_settings(settings):
         raise ValueError("data.codec_augment.codecs must be a nonempty list of codec names")
     if any(name not in KNOWN_CODECS for name in codecs):
         raise ValueError(f"data.codec_augment.codecs must be chosen from {list(KNOWN_CODECS)}")
+    if len(set(codecs)) != len(codecs):
+        raise ValueError("data.codec_augment.codecs must not contain duplicates")
     if settings.get("sample_rate") != 16000 or type(settings.get("sample_rate")) is not int:
         raise ValueError("data.codec_augment.sample_rate must be 16000")
 
@@ -82,6 +95,52 @@ def probe_codecs():
 
 def _engine(available, implementation, reason):
     return dict(available=bool(available), implementation=implementation, reason=reason)
+
+
+def codec_environment(augmentor):
+    """Capture actual executables/libraries and loaded weights, once at preflight."""
+    from .cache import file_sha
+    versions = {"python": platform.python_version()}
+    for package in ("numpy", "torch", "torchaudio", "encodec"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = None
+    result = dict(versions=versions, ffmpeg=None, amr_libraries=[], encodec_weights_sha256=None)
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg and set(augmentor.requested) & {"mp3", "opus"}:
+        result["ffmpeg"] = dict(path=ffmpeg, sha256=file_sha(ffmpeg),
+            version=subprocess.check_output([ffmpeg, "-version"], text=True, errors="replace"),
+            encoder_options={name: subprocess.check_output(
+                [ffmpeg, "-hide_banner", "-h", "encoder=" + name], stderr=subprocess.STDOUT,
+                text=True, errors="replace") for name in ("libmp3lame", "libopus")})
+        if shutil.which("ldd"):
+            linked = subprocess.run(["ldd", ffmpeg], capture_output=True, text=True, errors="replace", check=False)
+            libraries = []
+            for line in linked.stdout.splitlines():
+                if any(name in line for name in ("mp3lame", "libopus", "libavcodec", "libavformat", "libavutil", "libswresample")):
+                    paths = [Path(part) for part in line.split() if part.startswith("/")]
+                    libraries.extend(dict(path=str(path), sha256=file_sha(path)) for path in paths if path.is_file())
+            result["ffmpeg"]["linked_codec_libraries"] = libraries
+            result["ffmpeg"]["ldd_status"] = dict(returncode=linked.returncode, diagnostic=linked.stderr.strip())
+    if "amr" in augmentor.requested and augmentor.backend is None:
+        # The loaded file hashes identify distributions which do not export a version API.
+        maps = Path("/proc/self/maps")
+        loaded = sorted({line.split()[-1] for line in maps.read_text().splitlines()
+                         if any(name in line for name in ("opencore-amr", "vo-amrwbenc"))}) if maps.exists() else []
+        result["amr_libraries"] = [dict(path=path, sha256=file_sha(path)) for path in loaded if Path(path).is_file()]
+        if not result["amr_libraries"]:
+            raise RuntimeError("Cannot identify loaded AMR shared libraries for reproducibility")
+    if "encodec" in augmentor.requested and augmentor.backend is None:
+        digest = hashlib.sha256()
+        for name, tensor in sorted(augmentor._load_encodec().state_dict().items()):
+            digest.update(name.encode())
+            digest.update(str((tensor.dtype, tuple(tensor.shape))).encode())
+            digest.update(tensor.detach().cpu().contiguous().numpy().tobytes())
+        result["encodec_weights_sha256"] = digest.hexdigest()
+        result["encodec_weights_hash_method"] = "sorted state_dict names,dtypes,shapes,raw tensor bytes"
+        result["encodec_parameters"] = dict(sample_rate=24000, channels=1, segment=10.0, overlap=0.01)
+    return result
 
 
 def _amr_probe():
@@ -131,6 +190,8 @@ class CodecAugmentor:
             self.inventory = {name: _engine(True, "test backend", None) for name in self.families}
             return
         self.inventory = probe_codecs()
+        unavailable = {name: self.inventory[name]["reason"] for name in self.requested
+                       if not self.inventory[name]["available"]}
         self.families = []
         self.choices = {}
         cached = _PRESET_CACHE.get((self.sample_rate, tuple(self.requested)))
@@ -140,8 +201,8 @@ class CodecAugmentor:
             self.choices = {name: list(specs) for name, specs in self.choices.items()}
             self.leads = dict(self.leads)
             self.skipped = dict(self.skipped)
-            if self.probability > 0 and not self.families:
-                raise RuntimeError("Codec Augmentation is enabled but no real codec is available")
+            if unavailable or self.skipped or self.families != self.requested:
+                raise RuntimeError(f"Required Codec backends/presets unavailable: {dict(self.skipped, **unavailable)}")
             return
         for name in self.requested:
             if not self.inventory[name]["available"]:
@@ -157,9 +218,9 @@ class CodecAugmentor:
                 continue
             self.families.append(name)
             self.choices[name] = choices
-        if self.probability > 0 and not self.families:
+        if self.skipped or self.families != self.requested:
             detail = ", ".join(f"{name}: {reason}" for name, reason in self.skipped.items()) or "no codecs requested"
-            raise RuntimeError(f"Codec Augmentation is enabled but no real codec is available ({detail})")
+            raise RuntimeError(f"Required Codec backends/presets unavailable ({detail}); explicitly narrow data.codec_augment.codecs")
         _PRESET_CACHE[(self.sample_rate, tuple(self.requested))] = (
             list(self.families), {name: list(specs) for name, specs in self.choices.items()},
             dict(self.leads), dict(self.skipped))
@@ -167,9 +228,10 @@ class CodecAugmentor:
     def report(self):
         return dict(enabled=self.enabled, probability=self.probability, sample_rate=self.sample_rate,
                     requested=self.requested, available_families=list(self.families), skipped=dict(self.skipped),
-                    choices={name: [dict(variant=spec[1], param=spec[2]) for spec in specs]
+                    choices={name: [dict(variant=spec[1], param=spec[2], parameters=preset_parameters(spec)) for spec in specs]
                              for name, specs in self.choices.items()},
                     implementations={name: self.inventory[name]["implementation"] for name in self.inventory},
+                    environment=codec_environment(self),
                     leads={f"{spec[1]}:{spec[2]}": lead for spec, lead in self.leads.items()})
 
     def __getstate__(self):
@@ -194,16 +256,36 @@ class CodecAugmentor:
         if source.size == 0 or not np.isfinite(source).all():
             raise RuntimeError("Codec input waveform is empty or non-finite")
         original = int(source.size)
-        padded = _repeat_to(source, _minimum_samples(spec, self.sample_rate))
+        repeated = _repeat_to(source, _minimum_samples(spec, self.sample_rate))
+        # Encode a guard tail as well: compensating algorithmic delay must not
+        # discard the utterance's final phonemes and replace them with a DC pad.
+        padded = np.pad(repeated, (0, self.sample_rate // 5 + self.leads.get(spec, 0)))
         if self.backend is not None:
             decoded, info = self.backend(spec, padded)
             payload = info.get("payload", b"")
             decoded = np.ascontiguousarray(decoded, dtype=np.float32).reshape(-1)
         else:
             decoded, payload = self._roundtrip(padded, spec)
-        restored = _fit_length(decoded, original, self.leads.get(spec, 0), float(np.max(np.abs(source))))
-        info = dict(family=spec[0], variant=spec[1], param=spec[2], encoded_bytes=_encoded_size(spec, payload),
+        lead = self.leads.get(spec, 0)
+        available = decoded.size - lead
+        missing = max(0, original - available)
+        if missing > min(16, int(original * 0.01)):
+            raise RuntimeError(f"Codec lost {missing}/{original} samples after delay compensation: {spec}")
+        peak = float(np.max(np.abs(decoded))) if decoded.size else 0.0
+        window = decoded[max(0, lead):max(0, lead) + original]
+        clipping = float(np.mean(np.abs(window) > 1)) if window.size else 0.0
+        if peak > 2 or clipping > 0.01:
+            raise RuntimeError(f"Severe Codec clipping: peak={peak}, fraction={clipping}: {spec}")
+        restored = _fit_length(decoded, original, lead, float(np.max(np.abs(source))))
+        info = dict(family=spec[0], variant=spec[1], param=spec[2], parameters=preset_parameters(spec),
+                    encoded_bytes=_encoded_size(spec, payload),
                     input_samples=original, output_samples=int(restored.size), lead_samples=self.leads.get(spec, 0),
+                    decoded_samples=int(decoded.size), repeated_samples=int(repeated.size - original),
+                    guard_samples=int(padded.size - repeated.size), pad_samples=missing,
+                    pad_ratio=missing / original, crop_samples=max(0, int(available - original)),
+                    decoded_peak=peak, clipping_fraction=clipping,
+                    start_rms=float(np.sqrt(np.mean(restored[:min(320, original)] ** 2))),
+                    end_rms=float(np.sqrt(np.mean(restored[-min(320, original):] ** 2))), status="ok",
                     payload=payload)
         return restored, info
 
@@ -218,27 +300,24 @@ class CodecAugmentor:
         if family == "amr":
             choices = []
             probe = _probe_signal(self.sample_rate)
-            lead_nb = self._lead_from(lambda signal: _amr_nb_roundtrip(signal, AMR_NB_MODES[-1][0], self.sample_rate))
             for mode, _bitrate in AMR_NB_MODES:
                 spec = ("amr", "amr_nb", mode)
                 _decoded, payload = _amr_nb_roundtrip(probe, mode, self.sample_rate)
                 if not payload.startswith(b"#!AMR\n"):
                     raise RuntimeError(f"AMR-NB mode {mode} did not produce a bitstream")
                 choices.append(spec)
-                self.leads[spec] = lead_nb
-            lead_wb = self._lead_from(lambda signal: _amr_wb_roundtrip(signal, AMR_WB_MODES[-1][0], self.sample_rate))
+                self.leads[spec] = self._lead_from(lambda signal, mode=mode: _amr_nb_roundtrip(signal, mode, self.sample_rate))
             for mode, _bitrate in AMR_WB_MODES:
                 spec = ("amr", "amr_wb", mode)
                 _decoded, payload = _amr_wb_roundtrip(probe, mode, self.sample_rate)
                 if not payload.startswith(b"#!AMR-WB\n"):
                     raise RuntimeError(f"AMR-WB mode {mode} did not produce a bitstream")
                 choices.append(spec)
-                self.leads[spec] = lead_wb
+                self.leads[spec] = self._lead_from(lambda signal, mode=mode: _amr_wb_roundtrip(signal, mode, self.sample_rate))
             return choices
         if family == "encodec":
             self._load_encodec()
             probe = _probe_signal(self.sample_rate)
-            lead = self._lead_from(lambda signal: _encodec_roundtrip(self._encodec, signal, 6.0, self.sample_rate))
             choices = []
             for bandwidth in ENCODEC_BANDWIDTHS_KBPS:
                 spec = ("encodec", "encodec", float(bandwidth))
@@ -246,7 +325,8 @@ class CodecAugmentor:
                 if decoded.size == 0 or not np.isfinite(decoded).all():
                     raise RuntimeError(f"EnCodec bandwidth {bandwidth} produced an invalid waveform")
                 choices.append(spec)
-                self.leads[spec] = lead
+                self.leads[spec] = self._lead_from(
+                    lambda signal, bandwidth=bandwidth: _encodec_roundtrip(self._encodec, signal, float(bandwidth), self.sample_rate))
             return choices
         raise ValueError(f"Unsupported codec family: {family}")
 
@@ -254,7 +334,6 @@ class CodecAugmentor:
         probe = _probe_signal(self.sample_rate)
         choices = []
         failures = []
-        lead_args = None
         for param, encode_args, magic in presets:
             spec = (family, variant, param)
             try:
@@ -267,17 +346,10 @@ class CodecAugmentor:
                 failures.append(f"{param}: {error}")
                 continue
             choices.append(spec)
-            if lead_args is None:
-                lead_args = (encode_args, magic)
-        if choices:
-            encode_args, magic = lead_args
-            lead = self._lead_from(lambda signal, encode_args=encode_args, magic=magic: self._ffmpeg_probe(signal, encode_args, magic))
-            for spec in choices:
-                self.leads[spec] = lead
-        if failures and not choices:
-            raise RuntimeError("; ".join(failures))
+            self.leads[spec] = self._lead_from(
+                lambda signal, args=encode_args, check=magic: self._ffmpeg_probe(signal, args, check))
         if failures:
-            self.skipped[f"{family}_presets"] = "; ".join(failures)
+            raise RuntimeError("; ".join(failures))
         return choices
 
     def _ffmpeg_probe(self, signal, encode_args, magic):
@@ -287,10 +359,11 @@ class CodecAugmentor:
         return decoded, payload
 
     def _lead_from(self, roundtrip):
-        decoded, _payload = roundtrip(_lead_signal(self.sample_rate))
+        source = _lead_signal(self.sample_rate)
+        decoded, _payload = roundtrip(np.pad(source, (0, self.sample_rate // 5)))
         if isinstance(decoded, tuple):
             decoded = decoded[0]
-        return _estimate_lead(np.ascontiguousarray(decoded, dtype=np.float32).reshape(-1))
+        return _estimate_lead(np.ascontiguousarray(decoded, dtype=np.float32).reshape(-1), source)
 
     def _roundtrip(self, audio, spec):
         family, variant, param = spec
@@ -417,12 +490,59 @@ def _select_cached_waveforms(dataset, samples, seed, minimum_samples, maximum_sa
     raise RuntimeError(f"Could not find {samples} cached waveforms in [{minimum_samples}, {maximum_samples}] samples")
 
 
+def preset_parameters(spec):
+    family, variant, param = spec
+    details = dict(input_sample_rate=16000, input_channels=1, input_format="s16le" if family != "encodec" else "float32")
+    if variant in ("mp3", "opus"):
+        details.update(encoder="libmp3lame" if variant == "mp3" else "libopus", bitrate_kbps=param)
+        if variant == "opus":
+            details.update(vbr="on", application="audio")
+    elif variant in ("amr_nb", "amr_wb"):
+        details.update(mode=param, bitrate_kbps=dict(AMR_NB_MODES if variant == "amr_nb" else AMR_WB_MODES)[param],
+                       codec_sample_rate=8000 if variant == "amr_nb" else 16000, dtx=False)
+    elif variant == "encodec":
+        details.update(bandwidth_kbps=param, codec_sample_rate=24000, segment=10.0, overlap=.01)
+    return details
+
+
+def alignment_diagnostics(source, restored, sample_rate=16000):
+    """Check residual lag on speech-band start/end windows, after length repair.
+
+    Lossy codecs can change phase and spectrum. Low-correlation windows are
+    reported as inconclusive, rather than inventing a reliable delay estimate.
+    """
+    from scipy.signal import butter, correlate, correlation_lags, resample_poly, sosfilt
+    source = np.asarray(source, dtype=np.float32).reshape(-1)
+    restored = np.asarray(restored, dtype=np.float32).reshape(-1)
+    diagnostics = []
+    for name, start in (("start", 0), ("end", max(0, len(source)-32000))):
+        a, b = source[start:start+32000], restored[start:start+32000]
+        if len(a) < 320 or np.max(np.abs(a)) < 1e-4:
+            diagnostics.append(dict(boundary=name, conclusive=False, reason="short/silent source"))
+            continue
+        sos = butter(3, [200, 1700], btype="bandpass", fs=sample_rate, output="sos")
+        a = resample_poly(sosfilt(sos, a), 1, 4)
+        b = resample_poly(sosfilt(sos, b), 1, 4)
+        values = correlate(b, a, mode="full", method="fft")
+        lags = correlation_lags(len(b), len(a))
+        keep = np.abs(lags) <= sample_rate // 4 // 5
+        candidates, offsets = values[keep], lags[keep]
+        index = int(np.argmax(candidates))
+        correlation = float(candidates[index] / max(np.linalg.norm(a) * np.linalg.norm(b), 1e-12))
+        lag = int(offsets[index]) * 4
+        conclusive = correlation >= .25
+        if conclusive and abs(lag) > sample_rate * .03:
+            raise RuntimeError(f"Severe residual codec delay at {name}: {lag} samples, correlation={correlation:.3f}")
+        diagnostics.append(dict(boundary=name, conclusive=conclusive, residual_lag_samples=lag, correlation=correlation))
+    return diagnostics
+
+
 def _lead_signal(sample_rate):
-    """Impulse at sample 0. A quieter tail keeps low-rate codecs from dropping the buffer."""
-    signal = np.zeros(sample_rate, dtype=np.float32)
-    signal[0] = 0.85
-    signal[sample_rate // 2:sample_rate // 2 + 320] = 0.04
-    return signal
+    """Nonstationary voiced chirp: delay calibration cannot rely on impulse onset."""
+    t = np.arange(sample_rate, dtype=np.float64) / sample_rate
+    phase = 2 * np.pi * (130 * t + 175 * t**2)
+    envelope = (.6 + .3*np.sin(2*np.pi*3.7*t)) * np.minimum(t/.02, 1) * np.minimum((1-t)/.02, 1)
+    return (envelope * (.25*np.sin(phase) + .10*np.sin(2*phase) + .05*np.sin(3*phase))).astype(np.float32)
 
 
 def _encoded_size(spec, payload):
@@ -440,17 +560,21 @@ def _probe_signal(sample_rate):
     return np.clip(signal, -1, 1).astype(np.float32, copy=False)
 
 
-def _estimate_lead(decoded):
-    magnitude = np.abs(decoded)
-    if magnitude.size == 0:
-        return 0
-    peak = float(magnitude.max())
-    if peak < 0.05:
-        return 0
-    lead = int(np.argmax(magnitude >= 0.5 * peak))
-    if lead > min(decoded.size // 5, 16000 // 5):
-        return 0
-    return lead
+def _estimate_lead(decoded, source):
+    from scipy.signal import butter, correlate, correlation_lags, sosfilt
+    if decoded.size == 0 or not np.isfinite(decoded).all():
+        raise RuntimeError("Invalid codec delay calibration waveform")
+    sos = butter(3, [200, 3000], btype="bandpass", fs=16000, output="sos")
+    a, b = sosfilt(sos, source), sosfilt(sos, decoded)
+    values = correlate(b, a, mode="full", method="fft")
+    lags = correlation_lags(len(b), len(a))
+    valid = (lags >= 0) & (lags <= 3200)
+    candidates, offsets = values[valid], lags[valid]
+    best = int(np.argmax(candidates))
+    confidence = candidates[best] / max(np.linalg.norm(a) * np.linalg.norm(b), 1e-12)
+    if confidence < .25:
+        raise RuntimeError(f"Inconclusive codec delay calibration: correlation={confidence:.3f}")
+    return int(offsets[best])
 
 
 def _minimum_samples(spec, sample_rate):

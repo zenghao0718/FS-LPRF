@@ -159,7 +159,11 @@ class ValidationHistory:
     def _check_summary(self, summary):
         values = summary["per_seed"]
         if [row["seed"] for row in values] != self.cfg["validation"]["seeds"]:
-            raise ValueError("Full-Dev summary must contain all five seeds in order")
+            raise ValueError("Full-Dev summary must contain the configured seeds in order")
+        if self.cfg["validation"]["seeds"] == [42] and summary.get("seed_count") != 1:
+            raise ValueError("Development Full-Dev summary requires seed_count=1")
+        if summary.get("seed_count", len(values)) != len(values):
+            raise ValueError("Full-Dev seed_count does not match configured seeds")
         for name in ("eer", "auc", "ap", "acc"):
             metric = summary["metrics"][name]
             if any(not math.isfinite(float(row[name])) or not 0 <= row[name] <= 1 for row in values):

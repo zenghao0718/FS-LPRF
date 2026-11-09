@@ -3,6 +3,7 @@ from pathlib import Path
 import copy
 import csv
 import os
+import numpy as np
 import torch
 from .audio import GeneralFAD
 from .augmentation import RawBoostAudioAugmentation
@@ -89,13 +90,19 @@ class SpeechFakeDataset(GeneralFAD):
         self.do_augment = train_mode and data_config["do_augment"]
         self.do_codec_augment = False
         self.codec_augmentor = None
+        self.codec_cache_reader = None
+        self.codec_mode = "online"
+        self.codec_probability = 0.5
         self.cache_mode, self.cache_reader = "none", None
         self.feature_caches = {}
         if train_mode:
             settings = codec_settings(data_config)
             if settings["enabled"]:
-                self.codec_augmentor = CodecAugmentor(probability=settings["probability"], codecs=settings["codecs"],
-                                                      sample_rate=settings["sample_rate"])
+                self.codec_mode = settings["mode"]
+                self.codec_probability = settings["probability"]
+                if self.codec_mode == "online":
+                    self.codec_augmentor = CodecAugmentor(probability=settings["probability"], codecs=settings["codecs"],
+                                                          sample_rate=settings["sample_rate"])
                 self.do_codec_augment = True
         if self.do_augment:
             rir_root = data_config.get("rir_root") or os.environ.get("FS_LPRF_RIR_ROOT")
@@ -145,8 +152,13 @@ class SpeechFakeDataset(GeneralFAD):
         # Disabled codec augmentation must call the original method and consume no extra RNG.
         if not (self.train_mode and self.do_codec_augment):
             return super().get_audio(uttid)
-        audio = self.load_preprocessed_waveform(uttid)
-        audio = self.codec_augmentor(audio)
+        if self.codec_mode == "offline":
+            if self.codec_cache_reader is None or self.cache_mode != "waveform":
+                raise ValueError("Offline Codec requires bound original and codec waveform caches")
+            audio = (self.codec_cache_reader.get(uttid) if np.random.rand() < self.codec_probability
+                     else self.load_preprocessed_waveform(uttid))
+        else:
+            audio = self.codec_augmentor(self.load_preprocessed_waveform(uttid))
         if self.fix_len:
             audio = self.sample_segment(audio)
         else:

@@ -16,7 +16,7 @@
 
 - `data/audio.py`：保留 GeneralFAD/FADTrim 实际使用的读取、16 kHz 重采样、第一声道、首尾静音裁剪、−20 dB RMS、重复补足和随机 4 秒裁剪。
 - `data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 候选严格来自 OpenSLR 28 的四份 `rir_list` 文本索引。`noise_prob=1/5` 表示 RawBoost Algorithm 5 的触发概率，不使用 OpenSLR 28 的普通环境噪声文件。
-- `data/codec_augmentation.py`：可选的 Train-only 在线编解码。默认 `data.codec_augment.enabled=false`，关闭时不消耗额外随机数，Dev/Test 不启用。打开后先读 Waveform Cache，再以配置概率做 MP3、Opus、AMR 或 EnCodec 真实往返，然后才进入原有随机裁剪、RIR 和 RawBoost。标签、模型、损失和优化器不变。系统库与 `encodec==0.1.1` 的安装见 [docs/AUTODL.md](docs/AUTODL.md)。离线编码缓存尚未实现。
+- `data/codec_augmentation.py` / `data/codec_cache.py`：可选 Train-only 在线/离线真实编解码，默认关闭并保持 Baseline 随机数与身份。离线版本从完整 Train Waveform Cache 构建，每条固定一种 Codec/预设；训练以 50% 概率读原版或编码版，之后仍执行原有裁剪、RIR、RawBoost。Dev/Test 不启用，标签、模型、损失和优化器不变。依赖安装见 [docs/AUTODL.md](docs/AUTODL.md)，小规模构建/校验/续建、测速和开发单种子 Dev 见 [docs/OFFLINE_CODEC.md](docs/OFFLINE_CODEC.md)。
 - `models/xlsr.py`、`xlsr_layers.py`、`xlsr_attention.py`：官方 Fairseq XLS-R-300M 的卷积、Transformer、自注意力及必要基础组件，直接加载原始官方权重并保留全部参数名称。未整合 Whisper、HuBERT、AASIST、FACodec 或其他无关模型。
 - `models/fs_lprf_model.py`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention 与共享 `Linear(1024,256)`；仍只有 364800 个可训练参数，训练 Checkpoint 仍排除冻结前端。
 - `utils/metrics.py`：整合官方 DET/EER，保留稳定排序、阈值和数值约定。

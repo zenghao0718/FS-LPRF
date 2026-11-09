@@ -12,9 +12,12 @@ data:
   # Train-only codec round-trip. enabled=false reproduces the original baseline.
   codec_augment:
     enabled: false
+    mode: online
     probability: 0.5
     codecs: [mp3, opus, amr, encodec]
     sample_rate: 16000
+    build_seed: 42
+    offline_cache_root: /root/autodl-tmp/fs_lprf_codec_cache
 
 model:
   frontend: XLSR

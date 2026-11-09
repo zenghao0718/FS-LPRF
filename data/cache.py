@@ -138,7 +138,7 @@ def cache_path(cfg, identity):
 def _check_shape(shape, mode):
     if not isinstance(shape, list) or any(type(value) is not int or value <= 0 for value in shape):
         raise ValueError("Cache shape must contain positive integer dimensions")
-    if mode == "waveform":
+    if mode in ("waveform", "codec_waveform"):
         valid = len(shape) == 2 and shape[0] == 1
     else:
         valid = len(shape) == 3 and shape[0] == 25 and shape[-1] == 1024
@@ -161,9 +161,15 @@ class CacheReader:
                         "rng_schema_version", "dataset_fingerprint", "manifest_sha256", "source_audio_sha256", "preprocessing"}
             if not required.issubset(self.identity) or self.identity["split"] not in ("train", "dev", "test"):
                 raise ValueError("Invalid cache identity schema")
-            if self.identity["mode"] not in ("waveform", "xlsr_feature") or (
+            if self.identity["mode"] not in ("waveform", "xlsr_feature", "codec_waveform") or (
                     self.identity["mode"] == "waveform" and self.identity["split"] not in ("train", "dev")):
                 raise ValueError("Invalid cache split/mode")
+            if self.identity["mode"] == "codec_waveform" and self.identity["split"] != "train":
+                raise ValueError("Codec caches are Train-only")
+            if self.identity["mode"] == "codec_waveform" and not {
+                    "builder_version", "codec_parameters", "source_cache", "implementation_sha256",
+                    "codec_report", "source_commit"}.issubset(self.identity):
+                raise ValueError("Incomplete codec cache identity")
             if not isinstance(self.identity["uttids"], list) or not self.identity["uttids"]:
                 raise ValueError("Cache identity requires nonempty ordered uttids")
             if expected is not None and self.identity != expected:
@@ -202,7 +208,7 @@ class CacheReader:
 
     def _validate_shards(self):
         dtype = np.dtype(self.identity["dtype"])
-        if dtype.name not in ("float32", "float16") or (self.identity["mode"] == "waveform" and dtype.name != "float32"):
+        if dtype.name not in ("float32", "float16") or (self.identity["mode"] in ("waveform", "codec_waveform") and dtype.name != "float32"):
             raise ValueError("Invalid cache dtype")
         if self.identity["mode"] == "xlsr_feature" and self.identity["hidden_order"] != HIDDEN_ORDER:
             raise ValueError("Incorrect 25-layer hidden state order")
@@ -213,11 +219,16 @@ class CacheReader:
         grouped = {name: [] for name in names}
         for row in self.index:
             _check_shape(row["shape"], self.identity["mode"])
-            length = row["shape"][-1] if self.identity["mode"] == "waveform" else row["shape"][1]
+            length = row["shape"][-1] if self.identity["mode"] in ("waveform", "codec_waveform") else row["shape"][1]
             if (row["dtype"] != dtype.name or row["shard"] not in grouped or
                     type(row["offset"]) is not int or row["offset"] < 0 or
                     row["length"] != length):
                 raise ValueError("Invalid cache dtype, length or offset")
+            if self.identity["mode"] == "codec_waveform":
+                record = row.get("codec", {})
+                if (record.get("status") != "ok" or record.get("uttid") != row["uttid"] or
+                        record.get("input_samples") != length or record.get("output_samples") != length):
+                    raise ValueError("Invalid codec record status/length/ID")
             grouped[row["shard"]].append(row)
         for shard in shards:
             offset = 0
@@ -350,7 +361,9 @@ class CacheWriter:
         # publication was interrupted between their two file replacements.
         atomic_json(self.stage / "resume.json", dict(metadata=metadata, index=self.index))
 
-    def add(self, uid, tensor):
+    def add(self, uid, tensor, *, codec_record=None):
+        if (self.identity["mode"] == "codec_waveform") != (codec_record is not None):
+            raise ValueError("codec_waveform writes require a codec_record; other modes forbid it")
         position = len(self.index) + len(self.pending)
         if position >= len(self.identity["uttids"]) or uid != self.identity["uttids"][position]:
             raise ValueError("Cache writes must follow the complete unique uttid order")
@@ -364,9 +377,11 @@ class CacheWriter:
             self.handle = self.temporary.open("xb")
         offset = self.handle.tell()
         self.handle.write(array.tobytes(order="C"))
-        length = array.shape[-1] if self.identity["mode"] == "waveform" else array.shape[1]
+        length = array.shape[-1] if self.identity["mode"] in ("waveform", "codec_waveform") else array.shape[1]
         self.pending.append(dict(uttid=uid, shard=f"shard_{len(self.shards):05d}.bin", offset=offset,
                                  length=length, dtype=array.dtype.name, shape=list(array.shape)))
+        if codec_record is not None:
+            self.pending[-1]["codec"] = codec_record
         if len(self.pending) >= self.shard_size:
             self.flush()
 

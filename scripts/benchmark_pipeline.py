@@ -19,7 +19,9 @@ def main():
     parser.add_argument("--modes", default="none,waveform")
     parser.add_argument("--workers", default="0,2,4,8")
     parser.add_argument("--warmup", type=int, default=5)
-    parser.add_argument("--steps", type=int, default=20)
+    parser.add_argument("--steps", type=int, default=30)
+    parser.add_argument("--smoke-codec-cache", type=Path,
+                        help="Restrict ALL modes to valid Episodes covered by this explicit smoke cache")
     parser.add_argument("--include-dev", action="store_true", help="Explicitly time full Light/Full Dev, never Test")
     parser.add_argument("--dev-only", action="store_true")
     parser.add_argument("--dev-timings", type=Path, help="Reuse a prior benchmark JSON's measured Dev timings")
@@ -32,7 +34,7 @@ def main():
     cfg = load_config(args.config, args.set)
     modes, workers = args.modes.split(","), [int(value) for value in args.workers.split(",")]
     if set(modes) - set(BENCHMARK_MODES) or not workers or any(value < 0 for value in workers):
-        parser.error("Use none/waveform/xlsr_feature/waveform_codec and nonnegative worker counts")
+        parser.error(f"Use {BENCHMARK_MODES} and nonnegative worker counts")
     if args.output.resolve().is_relative_to(Path(cfg["runtime"]["output_dir"]).resolve()):
         parser.error("Benchmark output must be separate from the formal training directory")
     output = args.output.resolve() / ("benchmark_" + uuid.uuid4().hex[:12])
@@ -56,7 +58,8 @@ def main():
         seed_all(cfg["train"]["seed"])
         model = FSLPRF(local)
         train = [] if args.dev_only else benchmark_train(model, local, modes=modes, workers=workers,
-                                                         warmup=args.warmup, steps=args.steps)
+                                                         warmup=args.warmup, steps=args.steps,
+                                                         smoke_codec_cache=args.smoke_codec_cache)
         if args.include_dev or args.dev_only:
             seed_all(cfg["train"]["seed"])
             dev = benchmark_dev(model, local, output / "dev")
@@ -74,7 +77,8 @@ def main():
                                "GPU utilization is NVML during timed steps. waveform_codec forces probability 0.5 "
                                "and waveform forces codec augmentation off.")
     (output / "benchmark.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
-    rows = [{key: value for key, value in row.items() if key not in ("cache", "raw_steps", "codec_latency", "codec_report")} |
+    rows = [{key: value for key, value in row.items() if key not in ("cache", "codec_cache", "raw_steps", "codec_latency", "codec_report")} |
+            {f"codec_cache_{key}": row.get("codec_cache", {}).get(key) for key in ("bytes", "build_seconds", "fingerprint")} |
             {f"cache_{key}": row["cache"].get(key) for key in ("bytes", "build_seconds", "dtype", "fingerprint")}
             for row in train]
     if rows:

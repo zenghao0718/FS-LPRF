@@ -133,7 +133,8 @@ def timed_backend(model, timings):
 
 
 CODEC_TRAIN_MODE = "waveform_codec"
-BENCHMARK_MODES = ("none", "waveform", "xlsr_feature", CODEC_TRAIN_MODE)
+OFFLINE_CODEC_TRAIN_MODE = "waveform_codec_offline"
+BENCHMARK_MODES = ("none", "waveform", "xlsr_feature", CODEC_TRAIN_MODE, OFFLINE_CODEC_TRAIN_MODE)
 
 
 def configure_benchmark_mode(local, mode):
@@ -141,10 +142,11 @@ def configure_benchmark_mode(local, mode):
     if mode not in BENCHMARK_MODES:
         raise ValueError(f"Unknown benchmark mode: {mode}")
     local["data"].setdefault("codec_augment", {})
-    if mode == CODEC_TRAIN_MODE:
+    if mode in (CODEC_TRAIN_MODE, OFFLINE_CODEC_TRAIN_MODE):
         local["data"]["train_cache_mode"] = "waveform"
         local["data"]["codec_augment"]["enabled"] = True
         local["data"]["codec_augment"]["probability"] = 0.5
+        local["data"]["codec_augment"]["mode"] = "offline" if mode == OFFLINE_CODEC_TRAIN_MODE else "online"
     else:
         local["data"]["train_cache_mode"] = mode
         local["data"]["codec_augment"]["enabled"] = False
@@ -217,7 +219,7 @@ class UtilizationSampler:
 
 
 def benchmark_train(model, cfg, *, modes=("none", "waveform"), workers=(0, 2, 4, 8),
-                    warmup=5, steps=20, dataset_factory=open_train_dataset):
+                    warmup=5, steps=30, dataset_factory=open_train_dataset, smoke_codec_cache=None):
     if warmup < 0 or steps <= 0:
         raise ValueError("Benchmark warmup must be nonnegative and timed steps positive")
     if any(mode not in BENCHMARK_MODES for mode in modes):
@@ -226,20 +228,41 @@ def benchmark_train(model, cfg, *, modes=("none", "waveform"), workers=(0, 2, 4,
     episodes = None
     reference_ids = None
     codec_latency = None
+    episode_sha = None
     results = []
+    coverage = None
+    if smoke_codec_cache is not None:
+        if dataset_factory is not open_train_dataset:
+            raise ValueError("Smoke benchmark requires the real dual-cache dataset factory")
+        restricted = configure_benchmark_mode(copy.deepcopy(cfg), OFFLINE_CODEC_TRAIN_MODE)
+        restricted["data"]["codec_augment"]["offline_cache_root"] = str(smoke_codec_cache)
+        probe = open_train_dataset(restricted, allow_codec_smoke=True)
+        if not probe.codec_cache_reader.identity["smoke"]:
+            raise ValueError("--smoke-codec-cache requires an explicitly marked smoke cache")
+        coverage = set(probe.codec_cache_reader.rows)
+        probe.cache_reader.close()
+        probe.codec_cache_reader.close()
     with preserved_rng():
         for mode in modes:
             for count in workers:
                 local = configure_benchmark_mode(copy.deepcopy(cfg), mode)
                 local["runtime"].pop("num_workers", None)
                 local["runtime"]["train_num_workers"] = count
-                dataset = dataset_factory(local)
+                if smoke_codec_cache is not None:
+                    local["data"]["codec_augment"]["offline_cache_root"] = str(smoke_codec_cache)
+                    dataset = open_train_dataset(local, allow_codec_smoke=True)
+                else:
+                    dataset = dataset_factory(local)
                 ids = getattr(dataset, "uttids", None)
                 if episodes is None:
                     seed_all(cfg["train"]["seed"])
-                    sampler = EpisodeSampler(dataset.class_indices, **{key: cfg["train"][key] for key in
+                    pools = dataset.class_indices if coverage is None else {
+                        name: [i for i in pool if dataset.uttids[i] in coverage]
+                        for name, pool in dataset.class_indices.items()}
+                    sampler = EpisodeSampler(pools, **{key: cfg["train"][key] for key in
                         ("way", "support_per_class", "total_query_per_episode", "episodes_per_step")})
                     episodes = [sampler.sample_step() for _ in range(warmup + steps)]
+                    episode_sha = canonical_sha([[episode.__dict__ for episode in step] for step in episodes])
                     reference_ids = ids
                 elif ids != reference_ids:
                     raise ValueError("Benchmark modes must use identical sample/index order")
@@ -282,6 +305,7 @@ def benchmark_train(model, cfg, *, modes=("none", "waveform"), workers=(0, 2, 4,
                 cache = reader.stats() if reader is not None else dict(bytes=0, build_seconds=0, dtype="float32", fingerprint=None)
                 codec = local["data"].get("codec_augment") or {}
                 result = dict(mode=mode, num_workers=count, warmup_steps=warmup, timed_steps=steps,
+                              episode_sha256=episode_sha,
                               audio_microbatch_size=cfg["train"]["audio_microbatch_size"],
                               episodes_per_step=cfg["train"]["episodes_per_step"], samples_per_step=records[0]["samples"],
                               samples_per_second=sum(row["samples"] for row in records) / sum(durations),
@@ -289,6 +313,7 @@ def benchmark_train(model, cfg, *, modes=("none", "waveform"), workers=(0, 2, 4,
                               p90_step_seconds=float(np.percentile(durations, 90)), cache=cache,
                               codec_enabled=bool(codec.get("enabled", False)),
                               codec_probability=float(codec.get("probability", 0) or 0),
+                              restricted_smoke=coverage is not None, coverage_samples=len(coverage) if coverage else len(ids or []),
                               peak_gpu_memory_bytes=torch.cuda.max_memory_allocated(model.device) if model.device.type == "cuda" else 0,
                               prefetch_factor=cfg["runtime"]["prefetch_factor"] if count else None,
                               persistent_workers=bool(count and cfg["runtime"]["persistent_train_workers"]),
@@ -298,6 +323,8 @@ def benchmark_train(model, cfg, *, modes=("none", "waveform"), workers=(0, 2, 4,
                     result["codec_latency"] = codec_latency
                     augmentor = getattr(dataset, "codec_augmentor", None)
                     result["codec_report"] = augmentor.report() if augmentor is not None else None
+                if mode == OFFLINE_CODEC_TRAIN_MODE:
+                    result["codec_cache"] = dataset.codec_cache_reader.stats()
                 result["peak_observed_rss_bytes"] = max((row["observed_rss_bytes"] for row in records
                                                         if row["observed_rss_bytes"] is not None), default=None)
                 cpu_values = [row["cpu_percent_all_processes"] for row in records if row["cpu_percent_all_processes"] is not None]
@@ -309,6 +336,9 @@ def benchmark_train(model, cfg, *, modes=("none", "waveform"), workers=(0, 2, 4,
                 print(f"{mode} workers={count}: {result['samples_per_second']:.2f} samples/s; "
                       f"mean step={result['mean_step_seconds']:.4f}s median={result['p50_step_seconds']:.4f}s "
                       f"data_wait={result['data_wait_seconds']:.4f}s", flush=True)
+                for cache_reader in (getattr(dataset, "cache_reader", None), getattr(dataset, "codec_cache_reader", None)):
+                    if cache_reader is not None:
+                        cache_reader.close()
     model.load_state_dict(initial, strict=False)
     return results
 
@@ -344,9 +374,13 @@ def total_experiment_times(train_rows, dev_rows, cfg):
     full = sum(validation_mode(step, cfg["train"]) == "full" for step in range(1, cfg["train"]["total_steps"] + 1))
     for row in train_rows:
         dev = dev_rows.get("none" if row["mode"] == "none" else "waveform")
-        total = None if dev is None else (row["cache"]["build_seconds"] + dev["cache_build_seconds"] +
+        codec_build = row.get("codec_cache", {}).get("build_seconds", 0)
+        training_seconds = cfg["train"]["total_steps"] * row["mean_step_seconds"]
+        total = None if dev is None else (row["cache"]["build_seconds"] + codec_build + dev["cache_build_seconds"] +
                     cfg["train"]["total_steps"] * row["mean_step_seconds"] + light * dev["light_seconds"] + full * dev["full_seconds"])
         totals.append(dict(mode=row["mode"], num_workers=row["num_workers"], total_seconds=total,
+                           one_time_codec_build_seconds=codec_build, projected_4000_step_training_seconds=training_seconds,
+                           restricted_smoke=row.get("restricted_smoke", False),
                            light_validations=light, full_validations=full,
                            status="measured components, projected full experiment" if dev else "unmeasured Dev timings; no total estimate"))
     return totals

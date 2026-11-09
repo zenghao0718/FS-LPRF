@@ -296,6 +296,8 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
             summary = mean_std(macros)
             result = dict(mean_eer=summary["eer"]["mean"], std_eer=summary["eer"]["std"],
                           metrics=summary, per_seed=macros)
+            if mode is not None:
+                result.update(seed_count=len(macros), aggregation="single_seed" if len(macros) == 1 else "mean_std")
             if mode is None:
                 if external:
                     class_summaries = _class_summary(rows, dataset.fake_classes, step, mode)
@@ -311,7 +313,8 @@ def evaluate(model, dataset, manifest, cfg, output_dir, split, step=None, *, mod
             write_csv(paths["per_class_seed"], rows)
             write_csv(paths["per_class_mean_std"], class_summaries)
             write_csv(paths["macro_per_seed"], [dict(step=step, mode=mode, **row) for row in macros])
-            write_csv(paths["macro_mean_std"], [dict(step=step, mode=mode, metric=name, **summary[name]) for name in METRICS])
+            write_csv(paths["macro_mean_std"], [dict(step=step, mode=mode, metric=name, seed_count=len(macros),
+                      aggregation=result["aggregation"], **summary[name]) for name in METRICS])
         # Close the prediction file before committing reports, including on Windows.
         reports = []
         for path in paths.values():

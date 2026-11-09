@@ -7,7 +7,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
-from .cache import CacheReader, CacheWriter, cache_path, make_cache_identity, source_digest
+from .cache import CacheReader, CacheWriter, cache_path, make_cache_identity, source_digest, file_sha
 from .evaluation_manifest import load_or_create_manifest, load_or_create_light_manifest
 from .loaders import audio_loader, worker_options, ReusableAudioLoader, PreprocessedWaveformDataset
 from .randomness import RNG_SCHEMA_VERSION, sample_seed
@@ -95,14 +95,21 @@ def require_cache(cfg, identity, *, allow_smoke=False):
     return CacheReader(path, identity, verify_checksums=cfg["cache"]["verify_checksums"], allow_smoke=allow_smoke)
 
 
-def open_train_dataset(cfg):
+def open_train_dataset(cfg, *, allow_codec_smoke=False):
     mode = cfg["data"]["train_cache_mode"]
     dataset = SpeechFakeDataset(cfg["data"], "train", train_mode=mode != "xlsr_feature")
+    offline = getattr(dataset, "do_codec_augment", False) and getattr(dataset, "codec_mode", "online") == "offline"
     if mode == "waveform":
-        dataset.use_cache(open_waveform_cache(dataset, cfg), mode)
+        reader = open_waveform_cache(dataset, cfg, verify_checksums=True) if offline else open_waveform_cache(dataset, cfg)
+        dataset.use_cache(reader, mode)
     elif mode != "none":
         identity = make_cache_identity(dataset, cfg, mode, seed=train_view_seed(cfg))
         dataset.use_cache(require_cache(cfg, identity), mode)
+    if offline:
+        if mode != "waveform":
+            raise ValueError("Offline Codec training requires data.train_cache_mode=waveform")
+        from .codec_cache import open_codec_cache
+        dataset.codec_cache_reader = open_codec_cache(dataset.cache_reader, cfg, allow_smoke=allow_codec_smoke)
     return dataset
 
 
@@ -154,7 +161,14 @@ def evaluation_view(dataset, cfg, mode, seed):
 
 def cache_bindings(train_dataset, dev_dataset):
     result = dict(rng_schema_version=RNG_SCHEMA_VERSION, train_mode=train_dataset.cache_mode)
+    if getattr(train_dataset, "do_codec_augment", False) and getattr(train_dataset, "codec_mode", "online") == "online":
+        # Persist/bind executable, library, preset and weight provenance for online runs too.
+        result["online_codec"] = dict(report=train_dataset.codec_augmentor.report(),
+                                     implementation_sha256=file_sha(Path(__file__).with_name("codec_augmentation.py")))
     readers = ([train_dataset.cache_reader] if train_dataset.cache_reader else [])
+    codec_reader = getattr(train_dataset, "codec_cache_reader", None)
+    if codec_reader is not None:
+        readers.append(codec_reader)
     readers += ([dev_dataset.cache_reader] if dev_dataset.cache_reader else [])
     readers += list(dev_dataset.feature_caches.values())
     result["caches"] = [dict(fingerprint=reader.metadata["fingerprint"],

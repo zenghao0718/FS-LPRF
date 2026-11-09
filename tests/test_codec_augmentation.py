@@ -17,6 +17,65 @@ from engine.validation_schedule import make_run_identity
 from utils.config import load_config
 
 
+def test_missing_requested_backend_is_not_silently_dropped(monkeypatch):
+    import data.codec_augmentation as module
+    monkeypatch.setattr(module, "_PRESET_CACHE", {})
+    monkeypatch.setattr(module, "probe_codecs", lambda: {
+        "mp3": dict(available=True, implementation="test", reason=None),
+        "amr": dict(available=False, implementation="test", reason="missing AMR libraries")})
+    monkeypatch.setattr(CodecAugmentor, "_build_choices", lambda self, family: [(family, family, 0)])
+    with pytest.raises(RuntimeError, match="missing AMR libraries"):
+        CodecAugmentor(codecs=["mp3", "amr"])
+
+
+def test_one_missing_bitrate_fails_the_entire_preflight(monkeypatch):
+    import data.codec_augmentation as module
+    augmentor = CodecAugmentor(codecs=["mp3"], backend=lambda spec, audio: (audio, {}))
+    monkeypatch.setattr(augmentor, "_lead_from", lambda fn: 0)
+    def encode(audio, rate, args):
+        if "16k" in args:
+            raise RuntimeError("16k preset unsupported")
+        return audio, b"ID3-real-probe-placeholder"
+    monkeypatch.setattr(module, "_ffmpeg_roundtrip", encode)
+    with pytest.raises(RuntimeError, match="16k preset unsupported"):
+        augmentor._build_choices("mp3")
+
+
+@pytest.mark.parametrize("error", ["short", "nan", "clipped"])
+def test_severe_decode_anomalies_are_rejected(error):
+    def backend(spec, audio):
+        output = audio.copy()
+        if error == "short": output = output[:10]
+        if error == "nan": output[0] = np.nan
+        if error == "clipped": output *= 20
+        return output, {"payload": b"test"}
+    augmentor = CodecAugmentor(codecs=["mp3"], backend=backend)
+    with pytest.raises(RuntimeError, match="lost|non-finite|clipping"):
+        augmentor.apply_array(_tone(), ("mp3", "mp3", 16))
+
+
+def test_baseline_disabled_does_not_probe_or_consume_rng(dataset, config, tmp_path, monkeypatch):
+    from utils.seed import capture_rng
+    from test_pipeline_workers import rng_equal
+    forbidden = lambda **kw: pytest.fail("Disabled/Dev/Test must not initialize a Codec backend")
+    monkeypatch.setattr("data.speechfake_dataset.CodecAugmentor", forbidden)
+    options = dict(config["data"], do_augment=False, data_path=str(tmp_path))
+    before = capture_rng()
+    training = SpeechFakeDataset(options, "train", train_mode=True)
+    rng_equal(before, capture_rng())
+    with sample_rng(88):
+        expected = GeneralFAD.get_audio(training, training.uttids[0])
+        after_original = capture_rng()
+    with sample_rng(88):
+        actual = training.get_audio(training.uttids[0])
+        rng_equal(after_original, capture_rng())
+    assert torch.equal(expected, actual)
+    options["codec_augment"] = dict(options["codec_augment"], enabled=True, mode="offline")
+    for split in ("dev", "test"):
+        evaluation = SpeechFakeDataset(options, split)
+        assert evaluation.codec_cache_reader is None and evaluation.codec_augmentor is None
+
+
 def _tone(samples=16000, sample_rate=16000):
     time = np.arange(samples, dtype=np.float32) / sample_rate
     return (0.3 * np.sin(2 * np.pi * 220 * time) + 0.1 * np.sin(2 * np.pi * 660 * time)).astype(np.float32)

@@ -47,7 +47,7 @@ def load_or_create_manifest(dataset, path, shot, seeds):
         excluded = {uid for seed in seeds for uid in supports[str(seed)][name]}
         queries[name] = [uid for uid in pools[name] if uid not in excluded]
         if not queries[name]:
-            raise ValueError(f"{name}: no Query remains after excluding five Support sets")
+            raise ValueError(f"{name}: no Query remains after excluding configured Support sets")
     manifest = dict(version=1, split=dataset.split, shot=shot, seeds=list(seeds),
                     dataset_fingerprint=fingerprint, classes=classes,
                     supports=supports, queries=queries,
@@ -87,8 +87,8 @@ def _expected_light_manifest(dataset, full_manifest, full_manifest_path, shot, s
         raise ValueError("Light Dev requires 10-shot and the original seed 42 Support")
     if type(max_query_per_class) is not int or not 1 <= max_query_per_class <= 1000:
         raise ValueError("Light Query cap must be an integer between 1 and 1000")
-    if full_manifest.get("seeds") != DEV_SEEDS or len(dataset.fake_classes) != 32:
-        raise ValueError("Light Dev requires the original five-seed, 32-Fake-class manifest")
+    if full_manifest.get("seeds") not in ([42], DEV_SEEDS) or len(dataset.fake_classes) != 32:
+        raise ValueError("Light Dev requires a [42] or official five-seed, 32-Fake-class manifest")
     source_bytes = Path(full_manifest_path).read_bytes()
     if json.loads(source_bytes) != full_manifest:
         raise ValueError("Source Dev manifest on disk does not match the supplied manifest")

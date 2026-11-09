@@ -69,13 +69,15 @@ def validate_config(cfg):
                       optimizer="AdamW", learning_rate=1e-4, betas=[0.9, 0.999],
                       weight_decay=1e-4, warmup_steps=100, min_learning_rate=1e-6,
                       gradient_clip=1.0),
-        "validation": dict(shot=10, seeds=SEEDS, light_seed=42),
+        "validation": dict(shot=10, light_seed=42),
         "test": dict(shot=10, seeds=SEEDS),
     }
     for section, values in fixed.items():
         for key, expected in values.items():
             if cfg[section][key] != expected:
                 raise ValueError(f"Phase 1 protocol requires {section}.{key}={expected!r}")
+    if cfg["validation"]["seeds"] not in ([42], SEEDS) or any(type(seed) is not int for seed in cfg["validation"]["seeds"]):
+        raise ValueError("validation.seeds must be [42] (development) or [17,42,71,100,123] (official)")
     light, full = train["light_validation_interval_steps"], train["full_validation_interval_steps"]
     if full % light:
         raise ValueError("full_validation_interval_steps must be divisible by light_validation_interval_steps")
@@ -116,6 +118,9 @@ def validate_config(cfg):
         raise ValueError("cache.warn_if_estimated_gb_above must be positive")
     if "codec_augment" in cfg["data"]:
         validate_codec_settings(cfg["data"]["codec_augment"])
+        codec = cfg["data"]["codec_augment"]
+        if codec["enabled"] and codec.get("mode", "online") == "offline" and cfg["data"]["train_cache_mode"] != "waveform":
+            raise ValueError("Offline Codec requires data.train_cache_mode=waveform")
 
 
 def common_parser(description):
