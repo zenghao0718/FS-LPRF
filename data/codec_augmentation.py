@@ -747,8 +747,10 @@ def _amr_wb_roundtrip(audio, mode, sample_rate):
 def _encodec_roundtrip(model, audio, bandwidth, sample_rate):
     from encodec.utils import convert_audio
     device = next(model.parameters()).device
-    waveform = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).unsqueeze(0).to(device)
-    converted = convert_audio(waveform, sample_rate, model.sample_rate, model.channels)
+    # Resample on CPU. torchaudio Resample weights are CPU modules; moving the
+    # waveform first makes CUDA inputs fail against those weights.
+    waveform = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).unsqueeze(0)
+    converted = convert_audio(waveform, sample_rate, model.sample_rate, model.channels).to(device)
     with torch.inference_mode():
         model.set_target_bandwidth(float(bandwidth))
         frames = model.encode(converted.unsqueeze(0))
