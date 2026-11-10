@@ -1,0 +1,22 @@
+{
+  "source_commit": "5f538056ec070b2e1ad6938bcf9a21af5de4ffa0",
+  "source_implementation_sha256": {
+    "cache.py": "40a389ec28d9cad5a50a52dca6dc76a6625ecb4263b72d9efca869d6a54ef2c9",
+    "codec_augmentation.py": "b62e47f1e624400febe6e1b3d89ccb473da60ee6dafaf51281758c61f870d3e3",
+    "codec_cache.py": "1fa815feea84384e8bf804af7ba78fb8f0f24d2b2520ebdc7e9b82b6d7b9b955",
+    "codec_storage.py": "7fc2a41fea37f61a41029c3fbad130b3939acfc2f1fff528d18f438df4936542",
+    "codec_workers.py": "1e9c4f7890915db25f6c1de456fc3416366347050564931f9786a1fae348bbc9",
+    "randomness.py": "931e6531ca79de615bdce19df0ff6f51ae318b29b1499d376c95ed2f4b11cde7"
+  },
+  "target_implementation_sha256": {
+    "cache.py": "1ada177ccece4438f1f90b4e5190b0393dbc3970f634ec1074051fc71f26881b",
+    "codec_augmentation.py": "a42f05038df48d72d3f9689c0c983f2cb19df7e46b2500945b1058dd4b198cfc",
+    "codec_cache.py": "a540ad8fdc5b532d74afedb3d4f973f66942980fef8b65b4a797597d93e8d8fb",
+    "codec_compat.py": "602473706e5f28c889c13d7f1469879dfb690e118948c4dd36f8b7995239837e",
+    "codec_records.py": "0e99833eefe904cd8ee33b5f78bd98e4777bf5b47b2b14235670a6b28382b444",
+    "codec_storage.py": "66c3a3f407a8e293f89bd6219463258fd1537eb0b987de9ce66bd67c7aa9c615",
+    "codec_workers.py": "85a5b320321a6b8e796c626be5c161d919c9346b18062bb18f89334bac53398d",
+    "randomness.py": "931e6531ca79de615bdce19df0ff6f51ae318b29b1499d376c95ed2f4b11cde7"
+  },
+  "transition": "5f53805_to_severe_clipping_original_v1"
+}

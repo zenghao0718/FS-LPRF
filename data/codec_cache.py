@@ -4,7 +4,6 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
-import time
 
 import numpy as np
 import torch
@@ -12,7 +11,8 @@ import torch
 from .cache import CacheReader, atomic_json, file_sha
 from .codec_augmentation import alignment_diagnostics, codec_settings
 from .codec_storage import CodecCacheWriter, FORMAT_VERSION
-from .randomness import sample_rng, sample_seed
+from .randomness import sample_seed
+from .codec_records import FALLBACK_POLICY, encode_cached_sample, validate_codec_record
 
 BUILDER_VERSION = 1
 LEGACY_CPU_IMPLEMENTATION = {
@@ -25,7 +25,8 @@ LEGACY_CPU_IMPLEMENTATION = {
 
 def implementation_hashes():
     return {name: file_sha(Path(__file__).with_name(name)) for name in
-            ("codec_cache.py", "codec_augmentation.py", "cache.py", "randomness.py", "codec_storage.py", "codec_workers.py")}
+            ("codec_cache.py", "codec_augmentation.py", "cache.py", "randomness.py", "codec_storage.py", "codec_workers.py",
+             "codec_records.py", "codec_compat.py")}
 
 
 def build_parameters(cfg):
@@ -74,6 +75,7 @@ def make_codec_identity(source, cfg, augmentor, *, uttids=None, smoke=False, enc
     identity = copy.deepcopy(source.identity)
     identity.update(mode="codec_waveform", dtype="float32", uttids=ids, smoke=bool(smoke),
                     builder_version=BUILDER_VERSION, codec_storage_format=FORMAT_VERSION,
+                    clipping_fallback_policy=FALLBACK_POLICY,
                     encodec_device=encodec_device, codec_parameters=build_parameters(cfg),
                     source_cache=dict(fingerprint=source.metadata["fingerprint"],
                                       content_fingerprint=source.metadata["content_fingerprint"]),
@@ -131,7 +133,23 @@ def validate_codec_reader(reader, source, cfg):
     implementation = identity.get("implementation_sha256")
     legacy = reader.metadata.get("format_version", 1) == 1 and implementation == LEGACY_CPU_IMPLEMENTATION
     if identity.get("builder_version") != BUILDER_VERSION or (implementation != implementation_hashes() and not legacy):
-        raise ValueError("Codec builder/implementation identity mismatch")
+        from .codec_compat import validate_compatibility
+        audit = validate_compatibility(reader.path, identity)
+        reader.metadata["compatibility_audit_sha256"] = audit["audit_sha256"]
+        reader.metadata["compatibility_boundary"] = audit["boundary"]
+    elif not legacy and identity.get("clipping_fallback_policy") != FALLBACK_POLICY:
+        raise ValueError("Codec fallback policy identity mismatch")
+    _validate_codec_contents(reader, source, cfg)
+    if legacy and "encodec" in identity["codec_parameters"]["codecs"]:
+        params = identity["codec_report"]["environment"]["encodec_parameters"]
+        if (params["sample_rate"], params["channels"], params["segment"]) != (24000, 1, None):
+            raise ValueError("Legacy segmented EnCodec cache is incompatible")
+    return reader
+
+
+def _validate_codec_contents(reader, source, cfg):
+    """Source/ID/assignment checks shared with the narrowly pinned recovery operation."""
+    identity = reader.identity
     if identity.get("codec_parameters") != build_parameters(cfg):
         raise ValueError("Codec parameters/build_seed mismatch")
     binding = dict(fingerprint=source.metadata["fingerprint"], content_fingerprint=source.metadata["content_fingerprint"])
@@ -144,18 +162,16 @@ def validate_codec_reader(reader, source, cfg):
     if identity["uttids"] != expected or (not identity["smoke"] and expected != source.identity["uttids"]):
         raise ValueError("Codec IDs must match source manifest order/coverage")
     report = identity["codec_report"]
-    if legacy and "encodec" in identity["codec_parameters"]["codecs"]:
-        params = report["environment"]["encodec_parameters"]
-        if (params["sample_rate"], params["channels"], params["segment"]) != (24000, 1, None):
-            raise ValueError("Legacy segmented EnCodec cache is incompatible")
     if report["available_families"] != identity["codec_parameters"]["codecs"] or report["skipped"]:
         raise ValueError("Incomplete codec preflight inventory")
     for uid, row in reader.rows.items():
         record = row.get("codec", {})
+        validate_codec_record(record, uid, row["length"])
+        if (record["status"] == "fallback_original" and identity.get("clipping_fallback_policy") != FALLBACK_POLICY
+                and "compatibility_audit_sha256" not in reader.metadata):
+            raise ValueError("Codec fallback record lacks an authorized policy")
         spec = choose_spec(identity, uid)
-        if (row["shape"] != source.rows[uid]["shape"] or record.get("status") != "ok" or
-                record.get("uttid") != uid or record.get("input_samples") != row["length"] or
-                record.get("output_samples") != row["length"] or
+        if (row["shape"] != source.rows[uid]["shape"] or
                 (record.get("family"), record.get("variant"), record.get("param")) != spec):
             raise ValueError(f"Codec record/length/assignment mismatch: {uid}")
     return reader
@@ -179,12 +195,9 @@ def preflight_waveforms(source, augmentor):
     for specs in augmentor.choices.values():
         for spec in specs:
             for uid in selected:
-                started = time.perf_counter()
                 source_audio = source.get(uid).numpy().reshape(-1)
-                audio, info = augmentor.apply_array(source_audio, spec)
-                rows.append(dict(uttid=uid, seconds=time.perf_counter()-started,
-                                 alignment=alignment_diagnostics(source_audio, audio),
-                                 **{key: value for key, value in info.items() if key != "payload"}))
+                audio, info = encode_cached_sample(source, augmentor, uid, spec, 42)
+                rows.append(dict(info, alignment=alignment_diagnostics(source_audio, audio)))
     return rows
 
 
@@ -198,11 +211,7 @@ def build_codec_cache(source, cfg, target, identity, augmentor=None, *, resume=F
         def serial_results():
             for uid in ids:
                 spec = choose_spec(identity, uid)
-                started = time.perf_counter()
-                with sample_rng(sample_seed("codec_encode", identity["codec_parameters"]["build_seed"], uid)):
-                    audio, info = augmentor.apply_array(source.get(uid).numpy().reshape(-1), spec)
-                record = {key: value for key, value in info.items() if key != "payload"}
-                record.update(uttid=uid, seconds=time.perf_counter()-started)
+                audio, record = encode_cached_sample(source, augmentor, uid, spec, identity["codec_parameters"]["build_seed"])
                 yield uid, audio, record
         tasks = ((uid, choose_spec(identity, uid), identity["codec_parameters"]["build_seed"]) for uid in ids)
         results = pool.map(tasks) if pool is not None else serial_results()

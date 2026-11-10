@@ -39,6 +39,18 @@ _AMR_WB_FRAME = 320
 _FFMPEG_THREADS = None  # Builder workers set this once; online defaults remain unchanged.
 
 
+class CodecClippingError(RuntimeError):
+    """Only the existing severe finite-amplitude rule may produce this error."""
+    def __init__(self, peak, clipping_fraction, spec):
+        self.peak = float(peak)
+        self.clipping_fraction = float(clipping_fraction)
+        self.spec = tuple(spec)
+        super().__init__(f"Severe Codec clipping: peak={self.peak}, fraction={self.clipping_fraction}: {self.spec}")
+
+    def __reduce__(self):
+        return type(self), (self.peak, self.clipping_fraction, self.spec)
+
+
 def codec_settings(data_config):
     raw = (data_config or {}).get("codec_augment")
     settings = dict(CODEC_AUGMENT_DEFAULTS)
@@ -287,11 +299,13 @@ class CodecAugmentor:
         missing = max(0, original - available)
         if missing > min(16, int(original * 0.01)):
             raise RuntimeError(f"Codec lost {missing}/{original} samples after delay compensation: {spec}")
+        if not np.isfinite(decoded).all():
+            raise RuntimeError("Codec output is non-finite")
         peak = float(np.max(np.abs(decoded))) if decoded.size else 0.0
         window = decoded[max(0, lead):max(0, lead) + original]
         clipping = float(np.mean(np.abs(window) > 1)) if window.size else 0.0
         if peak > 2 or clipping > 0.01:
-            raise RuntimeError(f"Severe Codec clipping: peak={peak}, fraction={clipping}: {spec}")
+            raise CodecClippingError(peak, clipping, spec)
         restored = _fit_length(decoded, original, lead, float(np.max(np.abs(source))))
         info = dict(family=spec[0], variant=spec[1], param=spec[2], parameters=preset_parameters(spec),
                     encoded_bytes=_encoded_size(spec, payload),

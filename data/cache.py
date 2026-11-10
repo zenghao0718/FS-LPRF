@@ -234,10 +234,8 @@ class CacheReader:
                     row["length"] != length):
                 raise ValueError("Invalid cache dtype, length or offset")
             if self.identity["mode"] == "codec_waveform":
-                record = row.get("codec", {})
-                if (record.get("status") != "ok" or record.get("uttid") != row["uttid"] or
-                        record.get("input_samples") != length or record.get("output_samples") != length):
-                    raise ValueError("Invalid codec record status/length/ID")
+                from .codec_records import validate_codec_record
+                validate_codec_record(row.get("codec", {}), row["uttid"], length)
             grouped[row["shard"]].append(row)
         for shard in shards:
             offset = 0

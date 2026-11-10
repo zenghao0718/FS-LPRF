@@ -13,6 +13,7 @@ from data.codec_cache import (build_codec_cache, estimate_space, make_codec_iden
 from data.speechfake_dataset import SpeechFakeDataset
 from data.waveform_cache import open_waveform_cache
 from data.codec_workers import CodecWorkerPool
+from data.codec_records import summarize_codec_results
 from utils.config import common_parser, load_config
 
 
@@ -46,7 +47,7 @@ def main():
         validate_location(target, source, cfg)
         if args.verify:
             with open_codec_cache(source, cfg, path=target, allow_smoke=True) as reader:
-                print(json.dumps(reader.stats(), indent=2))
+                print(json.dumps(dict(reader.stats(), codec_results=summarize_codec_results(reader.index)), indent=2))
             return
         ids = source.identity["uttids"] if args.limit is None else select_smoke_ids(dataset, source, args.limit)
         space = estimate_space(source, ids, target, reserve_bytes=int(args.reserve_gib * 1024**3), resume=args.resume)
@@ -77,6 +78,8 @@ def main():
                               worker_threads=args.worker_threads, codec_shard_size=cfg["cache"]["codec_shard_size"],
                               peak_inflight=pool.peak_inflight, max_inflight=pool.max_inflight,
                               process_start_method="spawn", checksum_policy="none",
+                              codec_results=summarize_codec_results(reader.index),
+                              compatibility_boundary=reader.metadata.get("compatibility_boundary"),
                               preflight=preflight, source_samples=len(source.rows),
                               estimated_full_pcm_bytes=sum(row["length"] * 4 for row in source.index),
                               projected_full_build_seconds=stats["build_seconds"] * len(source.rows) / len(ids),

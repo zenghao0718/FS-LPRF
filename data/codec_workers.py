@@ -3,14 +3,13 @@ from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 import copy
 import multiprocessing
-import time
 
 import torch
 
 from .cache import CacheReader
 from .codec_augmentation import CodecAugmentor, alignment_diagnostics
 from .loaders import _worker_import_environment
-from .randomness import sample_rng, sample_seed
+from .codec_records import encode_cached_sample
 
 _SOURCE = None
 _AUGMENTOR = None
@@ -31,12 +30,7 @@ def _worker_report():
 
 
 def _encode_task(uid, spec, seed):
-    started = time.perf_counter()
-    with sample_rng(sample_seed("codec_encode", seed, uid)):
-        audio, info = _AUGMENTOR.apply_array(_SOURCE.get(uid).numpy().reshape(-1), spec)
-    record = {key: value for key, value in info.items() if key != "payload"}
-    record.update(uttid=uid, seconds=time.perf_counter()-started)
-    return audio, record
+    return encode_cached_sample(_SOURCE, _AUGMENTOR, uid, spec, seed)
 
 
 class CodecTaskError(RuntimeError):

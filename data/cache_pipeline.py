@@ -176,6 +176,9 @@ def cache_bindings(train_dataset, dev_dataset):
                              schema_version=reader.identity["schema_version"], split=reader.identity["split"],
                              mode=reader.identity["mode"], validation_mode=reader.identity["validation_mode"],
                              seed=reader.identity["seed"]) for reader in readers]
+    for binding, reader in zip(result["caches"], readers):
+        if "compatibility_audit_sha256" in reader.metadata:
+            binding["compatibility_audit_sha256"] = reader.metadata["compatibility_audit_sha256"]
     if train_dataset.cache_mode == "none":
         result["train_source_sha256"] = source_digest(train_dataset, train_dataset.uttids)
     if dev_dataset.cache_mode == "none" and not dev_dataset.feature_caches:

@@ -77,7 +77,14 @@ class CodecCacheWriter(CacheWriter):
                     raise ValueError("Codec cache identity mismatch")
                 self._save_progress()
             else:
-                with CacheReader(self.stage, identity, allow_smoke=True, allow_incomplete=True) as saved:
+                with CacheReader(self.stage, allow_smoke=True, allow_incomplete=True) as saved:
+                    if saved.identity != identity:
+                        from .codec_compat import validate_compatibility
+                        validate_compatibility(self.stage, saved.identity, identity)
+                        # Keep the original identity and chain anchor. The atomic
+                        # audit binds this exact target implementation separately.
+                        self.identity = saved.identity
+                        self.fingerprint = saved.metadata["fingerprint"]
                     self.index, self.shards = saved.index, saved.metadata["shards"]
                     self.previous_seconds = saved.metadata["build_seconds"]
                     self.token = saved.metadata["index_fingerprint"]
