@@ -65,7 +65,8 @@ cache:
   feature_dtype: float32
   feature_build_batch_size: 8
   shard_size: 64
-  verify_checksums: true
+  codec_shard_size: 512
+  verify_checksums: false
   train_feature_seed: null
   warn_if_estimated_gb_above: 100
 

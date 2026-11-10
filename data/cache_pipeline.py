@@ -100,7 +100,7 @@ def open_train_dataset(cfg, *, allow_codec_smoke=False):
     dataset = SpeechFakeDataset(cfg["data"], "train", train_mode=mode != "xlsr_feature")
     offline = getattr(dataset, "do_codec_augment", False) and getattr(dataset, "codec_mode", "online") == "offline"
     if mode == "waveform":
-        reader = open_waveform_cache(dataset, cfg, verify_checksums=True) if offline else open_waveform_cache(dataset, cfg)
+        reader = open_waveform_cache(dataset, cfg)
         dataset.use_cache(reader, mode)
     elif mode != "none":
         identity = make_cache_identity(dataset, cfg, mode, seed=train_view_seed(cfg))
@@ -207,7 +207,8 @@ def build_dataset_cache(dataset, cfg, identity, *, model=None, resume=False, for
     was_training = model.training if model is not None else None
     try:
         with preserved_rng(), CacheWriter(target, identity, cfg["cache"]["shard_size"], resume=resume,
-                                          force=force, progress=_progress) as writer:
+                                          force=force, progress=_progress,
+                                          verify_checksums=cfg["cache"]["verify_checksums"]) as writer:
             writer.previous_seconds += preparation_seconds
             ids = identity["uttids"][len(writer.index):]
             if identity["mode"] == "waveform":

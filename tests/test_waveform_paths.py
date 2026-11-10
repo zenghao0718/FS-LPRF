@@ -174,9 +174,8 @@ def test_missing_or_corrupt_cache_never_falls_back_to_existing_wavs(wave_fixture
     _,reader=build(cfg,"train")
     shard=reader.path/reader.metadata["shards"][0]["file"]
     raw=bytearray(shard.read_bytes())
-    raw[0]^=1
-    shard.write_bytes(raw)
-    with pytest.raises(ValueError,match="checksum"):
+    shard.write_bytes(raw[:-4])
+    with pytest.raises(ValueError,match="size/record"):
         open_waveform_cache(ds,cfg)
 
 

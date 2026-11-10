@@ -133,6 +133,29 @@ def test_encodec_encode_failure_is_visible_without_fallback(official_encodec_moc
         augmentor.apply_array(_tone(), ("encodec", "encodec", 1.5))
 
 
+def test_encodec_cuda_placement_requests_and_cpu_pcm_return_with_mock(official_encodec_mock, monkeypatch):
+    # Contract-only placement test. No CUDA tensor/kernel or real codec is executed.
+    model, _ = official_encodec_mock
+    parameter = types.SimpleNamespace(device=torch.device("cuda:0"), requires_grad_=lambda value: None)
+    monkeypatch.setattr(model, "parameters", lambda: iter([parameter]))
+    model_move = Mock(return_value=model)
+    monkeypatch.setattr(model, "to", model_move)
+    original = torch.Tensor.to
+    requested = []
+    def move(tensor, *args, **kwargs):
+        if args and str(args[0]).startswith("cuda"):
+            requested.append(str(args[0]))
+            return tensor
+        return original(tensor, *args, **kwargs)
+    monkeypatch.setattr(torch.Tensor, "to", move)
+    augmentor = CodecAugmentor(codecs=["encodec"], encodec_device="cuda:0")
+    model_move.assert_called_once_with("cuda:0")
+    restored, info = augmentor.apply_array(_tone(16003), ("encodec", "encodec", 3.0))
+    assert requested and set(requested) == {"cuda:0"}
+    assert restored.dtype == np.float32 and restored.shape == (16003,) and np.isfinite(restored).all()
+    assert augmentor.report()["environment"]["encodec_device"] == "cuda:0"
+
+
 def test_missing_requested_backend_is_not_silently_dropped(monkeypatch):
     import data.codec_augmentation as module
     monkeypatch.setattr(module, "_PRESET_CACHE", {})

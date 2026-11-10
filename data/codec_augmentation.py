@@ -36,6 +36,7 @@ ENCODEC_BANDWIDTHS_KBPS = (1.5, 3.0, 6.0, 12.0, 24.0)
 _PRESET_CACHE = {}
 _AMR_NB_FRAME = 160
 _AMR_WB_FRAME = 320
+_FFMPEG_THREADS = None  # Builder workers set this once; online defaults remain unchanged.
 
 
 def codec_settings(data_config):
@@ -150,6 +151,7 @@ def codec_environment(augmentor):
         result["encodec_weights_sha256"] = digest.hexdigest()
         result["encodec_weights_hash_method"] = "sorted state_dict names,dtypes,shapes,raw tensor bytes"
         result["encodec_parameters"] = _encodec_model_parameters(model)
+        result["encodec_device"] = str(next(model.parameters()).device)
     return result
 
 
@@ -182,7 +184,7 @@ def _ffmpeg_list(ffmpeg, flag):
 class CodecAugmentor:
     """Apply one real codec to a cached waveform, or leave it untouched."""
 
-    def __init__(self, *, probability=0.5, codecs=None, sample_rate=16000, backend=None):
+    def __init__(self, *, probability=0.5, codecs=None, sample_rate=16000, backend=None, encodec_device="cpu"):
         settings = dict(enabled=True, probability=probability, codecs=list(codecs or KNOWN_CODECS), sample_rate=sample_rate)
         validate_codec_settings(settings)
         self.enabled = True
@@ -190,6 +192,9 @@ class CodecAugmentor:
         self.sample_rate = settings["sample_rate"]
         self.requested = list(settings["codecs"])
         self.backend = backend
+        self.encodec_device = str(torch.device(encodec_device))
+        if torch.device(self.encodec_device).type not in ("cpu", "cuda"):
+            raise ValueError("EnCodec device must be cpu or cuda:N")
         self.leads = {}
         self.skipped = {}
         self._encodec = None
@@ -204,7 +209,8 @@ class CodecAugmentor:
                        if not self.inventory[name]["available"]}
         self.families = []
         self.choices = {}
-        cached = _PRESET_CACHE.get((self.sample_rate, tuple(self.requested)))
+        preset_key = (self.sample_rate, tuple(self.requested), self.encodec_device if "encodec" in self.requested else "cpu")
+        cached = _PRESET_CACHE.get(preset_key)
         if cached is not None:
             self.families, self.choices, self.leads, self.skipped = cached
             self.families = list(self.families)
@@ -231,7 +237,7 @@ class CodecAugmentor:
         if self.skipped or self.families != self.requested:
             detail = ", ".join(f"{name}: {reason}" for name, reason in self.skipped.items()) or "no codecs requested"
             raise RuntimeError(f"Required Codec backends/presets unavailable ({detail}); explicitly narrow data.codec_augment.codecs")
-        _PRESET_CACHE[(self.sample_rate, tuple(self.requested))] = (
+        _PRESET_CACHE[preset_key] = (
             list(self.families), {name: list(specs) for name, specs in self.choices.items()},
             dict(self.leads), dict(self.skipped))
 
@@ -422,6 +428,7 @@ class CodecAugmentor:
                 warnings.filterwarnings("ignore", message=".*weight_norm.*")
                 model = EncodecModel.encodec_model_24khz()
             _encodec_model_parameters(model)
+            model.to(self.encodec_device)
             model.set_target_bandwidth(6.0)
             model.eval()
             for parameter in model.parameters():
@@ -655,10 +662,11 @@ def _run_ffmpeg(args, payload, timeout):
 
 def _ffmpeg_roundtrip(audio, sample_rate, encode_args):
     timeout = max(30.0, audio.size / sample_rate * 8 + 5)
-    encoded = _run_ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "s16le", "-ar", str(sample_rate),
-                           "-ac", "1", "-i", "pipe:0", *encode_args, "pipe:1"], _float_to_i16(audio).tobytes(), timeout)
-    decoded = _run_ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0", "-f", "f32le",
-                           "-ac", "1", "-ar", str(sample_rate), "pipe:1"], encoded, timeout)
+    threads = [] if _FFMPEG_THREADS is None else ["-threads", str(_FFMPEG_THREADS), "-filter_threads", str(_FFMPEG_THREADS)]
+    encoded = _run_ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", *threads, "-f", "s16le", "-ar", str(sample_rate),
+                           "-ac", "1", "-i", "pipe:0", *encode_args, *threads, "pipe:1"], _float_to_i16(audio).tobytes(), timeout)
+    decoded = _run_ffmpeg(["ffmpeg", "-hide_banner", "-loglevel", "error", *threads, "-i", "pipe:0", "-f", "f32le",
+                           "-ac", "1", "-ar", str(sample_rate), *threads, "pipe:1"], encoded, timeout)
     if len(decoded) % 4:
         raise RuntimeError("ffmpeg returned a truncated PCM stream")
     return np.frombuffer(decoded, dtype=np.float32).copy(), encoded
@@ -738,7 +746,8 @@ def _amr_wb_roundtrip(audio, mode, sample_rate):
 
 def _encodec_roundtrip(model, audio, bandwidth, sample_rate):
     from encodec.utils import convert_audio
-    waveform = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).unsqueeze(0)
+    device = next(model.parameters()).device
+    waveform = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).unsqueeze(0).to(device)
     converted = convert_audio(waveform, sample_rate, model.sample_rate, model.channels)
     with torch.inference_mode():
         model.set_target_bandwidth(float(bandwidth))

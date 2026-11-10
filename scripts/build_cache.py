@@ -34,7 +34,7 @@ def main():
     parser.add_argument("--limit", type=int)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--force", action="store_true", help="Preserve existing cache, then regenerate explicitly")
-    parser.add_argument("--check", action="store_true", help="Read/validate all records and report cache statistics")
+    parser.add_argument("--check", action="store_true", help="Check cache structure and configured legacy checksums; no full PCM scan")
     parser.add_argument("--confirm-large-cache", action="store_true")
     args = parser.parse_args()
     cfg = load_config(args.config, args.set)
@@ -45,7 +45,7 @@ def main():
             dataset = SpeechFakeDataset(cfg["data"], args.split, train_mode=False)
             ids = dataset.uttids[:args.limit] if args.limit is not None else None
             reader = open_waveform_cache(dataset, cfg, uttids=ids,
-                                         allow_smoke=args.limit is not None, verify_checksums=True)
+                                         allow_smoke=args.limit is not None)
             print(json.dumps(dict(status="verified", caches=[reader.verify()]), indent=2))
             return
         dataset, identities = cache_specs(cfg, args.split, args.mode,

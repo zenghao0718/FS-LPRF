@@ -221,6 +221,8 @@ python scripts/evaluate.py --config configs/speechfake.yaml \
 
 离线 Codec Cache、1000–3000 条小规模构建/校验/中断续建、三模式 workers=4/8 测速及开发 Full Dev 单种子协议见 [OFFLINE_CODEC.md](OFFLINE_CODEC.md)。先完成该小规模检查，用户确认后才安排全量构建或正式训练。默认 Baseline 与原五种子协议保持不变。
 
+当前 Codec 构建采用独立 v2 增量提交，支持 `--codec-workers`、独立分片大小和可选单 EnCodec CUDA Worker。`cache.verify_checksums` 默认 false，普通读取/构建/Resume 不再扫描 PCM 或完整索引求 SHA，也不在结束时全量读取波形。旧 Train/Dev 缓存继续兼容，不需要重建；新命令及统计口径以上述 OFFLINE_CODEC.md 为准。
+
 正式输出目录包含 `config_resolved.yaml`、`run_state.json`、`cache_bindings.json`、`cache_metadata/`、`train.log`、Episode 日志、`tensorboard/`、5 份节点、Best 索引及 `evaluation/`。完整/轻量报告与完成标记保留原结构。续跑应保留整个目录及匹配缓存，缓存内容/模式/RNG schema 不一致会拒绝恢复；纯 Worker 性能参数可调整。具体文件名和恢复限制见 [VALIDATION_SCHEDULE.md](VALIDATION_SCHEDULE.md)。
 
 不要将数据、RIR、预训练文件或任何训练 Checkpoint 提交 Git。当前阶段不运行真实 0-shot、其他 Shot、基线、消融或 ASVspoof。原型库构建脚本仅供后续阶段调用，已通过合成数据接口测试。

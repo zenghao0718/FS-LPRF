@@ -43,7 +43,7 @@ python scripts/build_cache.py --split dev --mode waveform --check
 
 构建/估算需要源 WAV，检查和正式读取不需要。Dev 基础波形只存一份，不按 Light/Full 或 seed 复制；不要传 --seeds。--limit 是 smoke 身份，不能用于正式运行或全量删除依据。--resume 续建，--force 保留旧缓存并占额外空间。
 
-Worker 沿用 eval_num_workers/prefetch/线程配置，只预处理；主进程统一顺序写原 CacheWriter，保留分片、SHA、完整性和续建。CacheReader 按需映射有限分片并返回 Tensor 副本，close()/上下文管理释放当前映射，便于 Windows 临时目录清理。
+Worker 沿用 eval_num_workers/prefetch/线程配置，只预处理；主进程统一顺序写原 CacheWriter，保留分片、结构检查和续建。当前 `cache.verify_checksums=false`，默认不扫描 PCM/完整索引求 SHA；旧缓存的历史摘要复用，显式开启时才核对已有 SHA。Codec 另用 v2 增量构建，不要求重建这里的 Train/Dev Waveform Cache，见 [OFFLINE_CODEC.md](OFFLINE_CODEC.md)。CacheReader 按需映射有限分片并返回 Tensor 副本，close()/上下文管理释放当前映射，便于 Windows 临时目录清理。
 
 ## 无原始 WAV 的身份验证
 

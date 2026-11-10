@@ -60,11 +60,11 @@ def source_cache(dataset, config, tmp_path):
     cfg["data"].update(data_path=str(manifests), do_augment=False, train_cache_mode="waveform")
     cfg["data"]["codec_augment"].update(enabled=True, mode="offline", codecs=["mp3", "opus"],
                                        offline_cache_root=str(tmp_path / "codec"))
-    cfg["cache"].update(root=str(root), shard_size=17)
+    cfg["cache"].update(root=str(root), shard_size=17, codec_shard_size=17)
     cfg["runtime"].update(output_dir=str(tmp_path / "run"), pin_memory=False)
     ds = SpeechFakeDataset(cfg["data"], "train", train_mode=False)
     identity = make_cache_identity(ds, cfg, "waveform", recorded_source_sha256="a" * 64)
-    with CacheWriter(cache_path(cfg, identity), identity, 17) as writer:
+    with CacheWriter(cache_path(cfg, identity), identity, 17, verify_checksums=True) as writer:
         for i, uid in enumerate(ds.uttids):
             n = [1, 63, 320, 1001, 4000][i % 5]
             writer.add(uid, torch.full((1, n), .08 + (i % 10) * .005))
@@ -208,7 +208,7 @@ def test_identity_changes_fail_closed(source_cache, monkeypatch, change):
 
 
 @pytest.mark.parametrize("damage", ["shard", "index", "metadata", "missing"])
-def test_corruption_rejected_even_with_baseline_checksums_disabled(source_cache, damage):
+def test_structural_corruption_rejected_with_checksums_disabled(source_cache, damage):
     cfg, _, source, _ = source_cache
     reader, _ = build(source_cache)
     path = reader.path
@@ -217,7 +217,7 @@ def test_corruption_rejected_even_with_baseline_checksums_disabled(source_cache,
     if damage == "shard":
         shard = path / "shard_00000.bin"
         content = shard.read_bytes()
-        shard.write_bytes(b"bad!" + content[4:])
+        shard.write_bytes(content[:-4])  # Size damage remains detectable without content hashing.
     if damage == "index": (path / "index.json").write_text("[]")
     if damage == "metadata": (path / "metadata.json").write_text("{}")
     if damage == "missing": (path / "shard_00000.bin").unlink()
@@ -237,11 +237,11 @@ def test_locations_and_bad_source_inputs_are_rejected(source_cache):
             make_codec_identity(invalid, cfg, augmentor)
 
 
-def test_source_shard_corruption_is_rejected_with_checksums_disabled(source_cache):
+def test_source_shard_corruption_is_rejected_when_legacy_checksums_opted_in(source_cache):
     cfg, _, source, _ = source_cache
     build(source_cache)
     source.close()
-    cfg["cache"]["verify_checksums"] = False
+    cfg["cache"]["verify_checksums"] = True
     shard = source.path / source.metadata["shards"][0]["file"]
     data = shard.read_bytes()
     shard.write_bytes(b"bad!" + data[4:])
@@ -293,7 +293,20 @@ def test_builder_cli_dry_run_build_verify_inspection_and_no_backend_on_read(sour
     cfg, _, source, augmentor = source_cache
     cli = _cli("build_codec_cache", monkeypatch)
     monkeypatch.setattr(cli, "load_config", lambda *args: cfg)
-    monkeypatch.setattr(cli, "CodecAugmentor", lambda **kw: augmentor)
+    class ImmediatePool:
+        device, peak_inflight, max_inflight = "cpu", 1, 1
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def report(self): return augmentor.report()
+        def preflight(self, source, seed):
+            from data.codec_cache import preflight_waveforms
+            return preflight_waveforms(source, augmentor)
+        def map(self, tasks):
+            for uid, spec, seed in tasks:
+                audio, info = augmentor.apply_array(source.get(uid).numpy().reshape(-1), spec)
+                yield uid, audio, dict({k: v for k, v in info.items() if k != "payload"}, uttid=uid, seconds=.001)
+    monkeypatch.setattr(cli, "CodecWorkerPool", ImmediatePool)
     target = Path(cfg["data"]["codec_augment"]["offline_cache_root"])
     base = ["build_codec_cache.py", "--output-dir", str(target), "--limit", "66", "--reserve-gib", "0"]
     monkeypatch.setattr(sys, "argv", base + ["--dry-run"])
@@ -304,7 +317,7 @@ def test_builder_cli_dry_run_build_verify_inspection_and_no_backend_on_read(sour
     cli.main()
     assert (target / "build_report.json").is_file()
     capsys.readouterr()
-    monkeypatch.setattr(cli, "CodecAugmentor", Mock(side_effect=AssertionError("verify must not load backends")))
+    monkeypatch.setattr(cli, "CodecWorkerPool", Mock(side_effect=AssertionError("verify must not load backends")))
     monkeypatch.setattr(sys, "argv", ["build_codec_cache.py", "--output-dir", str(target), "--verify"])
     cli.main()
     assert json.loads(capsys.readouterr().out)["samples"] == 66

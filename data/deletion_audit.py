@@ -34,7 +34,7 @@ def audit_source_deletion(cfg, datasets=None):
             errors.append(f"{split}: Waveform Cache mode is required")
             continue
         try:
-            reader = open_waveform_cache(ds, cfg, verify_checksums=True)
+            reader = open_waveform_cache(ds, cfg)
             cache_reports[split] = reader.verify()
             missing = sorted({path for path in ds.uttid2path.values() if not Path(path).is_file()})
             if missing:

@@ -27,7 +27,7 @@ def main():
     options = copy.deepcopy(cfg["data"])
     options["codec_augment"]["enabled"] = False
     dataset = SpeechFakeDataset(options, "train")
-    with open_waveform_cache(dataset, cfg, verify_checksums=True) as source:
+    with open_waveform_cache(dataset, cfg) as source:
         with open_codec_cache(source, cfg, path=args.cache_dir, allow_smoke=True) as reader:
             target = validate_location(args.output_dir, source, cfg)
             if target.is_relative_to(reader.path) or reader.path.is_relative_to(target):

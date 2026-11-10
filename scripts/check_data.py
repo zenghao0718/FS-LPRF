@@ -27,7 +27,7 @@ def main():
         if args.cache_only:
             if split not in ("train", "dev") or cfg["data"][f"{split}_cache_mode"] != "waveform":
                 raise ValueError("--cache-only requires Train/Dev Waveform Cache; Test stays raw")
-            ds.use_cache(open_waveform_cache(ds, cfg, verify_checksums=True), "waveform")
+            ds.use_cache(open_waveform_cache(ds, cfg), "waveform")
         if classes is not None and classes != ds.fake_classes:
             raise ValueError("Train/Dev/Test attacker class mappings must match")
         classes = ds.fake_classes

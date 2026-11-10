@@ -27,7 +27,7 @@ def storage_identity(mode="waveform", ids=("a", "b", "c"), dtype="float32"):
 
 def small_cache(path, identity=None):
     identity = identity or storage_identity()
-    with CacheWriter(path, identity, 2) as writer:
+    with CacheWriter(path, identity, 2, verify_checksums=True) as writer:
         for number, uid in enumerate(identity["uttids"]):
             writer.add(uid, torch.arange(7 + number, dtype=torch.float32)[None])
         return writer.finish()
@@ -172,7 +172,7 @@ def test_cache_integrity_fails_closed(tmp_path, damage):
         content = shard.read_bytes()
         shard.write_bytes(content[:-4] if damage == "truncated" else b"1234" + content[4:])
     with pytest.raises(ValueError, match="Invalid cache"):
-        CacheReader(path)
+        CacheReader(path, verify_checksums=True)
 
 
 def test_nan_and_smoke_caches_are_not_formal_inputs(tmp_path):

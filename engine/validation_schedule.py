@@ -52,7 +52,7 @@ def make_run_identity(cfg, manifest_hash, light_manifest_hash, train_fingerprint
     for key in ("device", "num_workers", "train_num_workers", "eval_num_workers", "persistent_train_workers", "persistent_eval_workers",
                 "prefetch_factor", "pin_memory", "worker_torch_num_threads"):
         config["runtime"].pop(key, None)
-    for key in ("root", "shard_size", "verify_checksums", "warn_if_estimated_gb_above"):
+    for key in ("root", "shard_size", "codec_shard_size", "verify_checksums", "warn_if_estimated_gb_above"):
         config.get("cache", {}).pop(key, None)
     payload = dict(version=2, config=config, dev_manifest_sha256=manifest_hash,
                    light_manifest_sha256=light_manifest_hash, train_fingerprint=train_fingerprint,

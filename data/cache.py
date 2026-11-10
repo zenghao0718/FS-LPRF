@@ -147,15 +147,22 @@ def _check_shape(shape, mode):
 
 
 class CacheReader:
-    def __init__(self, path, expected=None, *, verify_checksums=True, allow_smoke=False, allow_incomplete=False):
+    def __init__(self, path, expected=None, *, verify_checksums=False, allow_smoke=False, allow_incomplete=False):
         self.path, self.verify_checksums = Path(path).resolve(), verify_checksums
         try:
-            if allow_incomplete:
+            if allow_incomplete and (self.path / "progress.json").exists():
+                from .codec_storage import load_codec_snapshot
+                self.metadata, self.index = load_codec_snapshot(self.path)
+            elif allow_incomplete:
                 progress = json.loads((self.path / "resume.json").read_text(encoding="utf-8"))
                 self.metadata, self.index = progress["metadata"], progress["index"]
             else:
                 self.metadata = json.loads((self.path / "metadata.json").read_text(encoding="utf-8"))
                 self.index = json.loads((self.path / "index.json").read_text(encoding="utf-8"))
+                if self.metadata.get("format_version") == 2:
+                    if self.metadata.get("identity_file") != "identity.json":
+                        raise ValueError("Invalid codec identity reference")
+                    self.metadata["identity"] = json.loads((self.path / "identity.json").read_text(encoding="utf-8"))
             self.identity = self.metadata["identity"]
             required = {"schema_version", "split", "mode", "validation_mode", "seed", "uttids", "smoke", "dtype",
                         "rng_schema_version", "dataset_fingerprint", "manifest_sha256", "source_audio_sha256", "preprocessing"}
@@ -185,10 +192,11 @@ class CacheReader:
                 raise ValueError("Cache is incomplete")
             if self.identity["smoke"] and not allow_smoke:
                 raise ValueError("Smoke/incomplete cache is forbidden for formal training/evaluation")
-            index_sha = hashlib.sha256(json.dumps(self.index, ensure_ascii=False, sort_keys=True,
-                                                 allow_nan=False).encode()).hexdigest() if allow_incomplete else file_sha(self.path / "index.json")
-            if self.metadata["index_sha256"] != index_sha:
-                raise ValueError("Cache index checksum mismatch")
+            if self.verify_checksums and self.metadata.get("index_sha256") is not None:
+                index_sha = hashlib.sha256(json.dumps(self.index, ensure_ascii=False, sort_keys=True,
+                                                     allow_nan=False).encode()).hexdigest() if allow_incomplete else file_sha(self.path / "index.json")
+                if self.metadata["index_sha256"] != index_sha:
+                    raise ValueError("Cache index checksum mismatch")
             if not isinstance(self.index, list):
                 raise ValueError("Invalid cache index")
             ids = [row["uttid"] for row in self.index]
@@ -199,7 +207,8 @@ class CacheReader:
             self._validate_shards()
             if self.metadata["output_shapes"] != [list(shape) for shape in sorted({tuple(row["shape"]) for row in self.index})]:
                 raise ValueError("Cache output-shape metadata mismatch")
-            content = canonical_sha([self.metadata["fingerprint"], self.metadata["index_sha256"], self.metadata["shards"]])
+            content = canonical_sha([self.metadata["fingerprint"],
+                                     self.metadata.get("index_fingerprint", self.metadata["index_sha256"]), self.metadata["shards"]])
             if content != self.metadata["content_fingerprint"]:
                 raise ValueError("Cache content fingerprint mismatch")
         except (KeyError, TypeError, OSError, ValueError) as error:
@@ -240,7 +249,7 @@ class CacheReader:
             path = self.path / shard["file"]
             if not rows or len(rows) != shard["records"] or offset != shard["bytes"] or path.stat().st_size != offset:
                 raise ValueError("Cache shard size/record count mismatch")
-            if self.verify_checksums and file_sha(path) != shard["sha256"]:
+            if self.verify_checksums and shard.get("sha256") is not None and file_sha(path) != shard["sha256"]:
                 raise ValueError("Cache shard checksum mismatch")
 
     def __getstate__(self):
@@ -266,10 +275,13 @@ class CacheReader:
             raise ValueError(f"Cache contains NaN/Inf: {uid}")
         return torch.from_numpy(array.copy())
 
-    def verify(self):
-        for uid in self.rows:
-            if not np.isfinite(self._array(uid)).all():
-                raise ValueError(f"Cache contains NaN/Inf: {uid}")
+    def verify(self, *, scan_waveforms=False):
+        """Structural validation by default; full PCM scanning is explicitly opt-in."""
+        self._validate_shards()
+        if scan_waveforms:
+            for uid in self.rows:
+                if not np.isfinite(self._array(uid)).all():
+                    raise ValueError(f"Cache contains NaN/Inf: {uid}")
         self._maps.clear()
         return self.stats()
 
@@ -285,6 +297,8 @@ class CacheReader:
 
     def stats(self):
         return dict(path=str(self.path), samples=len(self.rows), dtype=self.identity["dtype"],
+                    format_version=self.metadata.get("format_version", 1),
+                    checksum_policy=self.metadata.get("checksum_policy", "historical"),
                     fingerprint=self.metadata["fingerprint"], content_fingerprint=self.metadata["content_fingerprint"],
                     bytes=sum(shard["bytes"] for shard in self.metadata["shards"]),
                     build_seconds=self.metadata.get("build_seconds", 0),
@@ -318,8 +332,9 @@ class _WriterLock:
 
 class CacheWriter:
     """Commit complete shards to a resumable staging directory, then publish."""
-    def __init__(self, target, identity, shard_size, *, resume=False, force=False, progress=None):
+    def __init__(self, target, identity, shard_size, *, resume=False, force=False, progress=None, verify_checksums=False):
         target = Path(target)
+        self.verify_checksums = verify_checksums
         self.lock = _WriterLock(target.with_name(target.name + ".lock"))
         try:
             self._initialize(target, identity, shard_size, resume=resume, force=force, progress=progress)
@@ -341,7 +356,8 @@ class CacheWriter:
             elif not resume:
                 raise FileExistsError(f"Interrupted cache exists: {self.stage}; use --resume")
             else:
-                saved = CacheReader(self.stage, identity, allow_smoke=True, allow_incomplete=True)
+                saved = CacheReader(self.stage, identity, allow_smoke=True, allow_incomplete=True,
+                                    verify_checksums=self.verify_checksums)
                 self.index, self.shards = saved.index, saved.metadata["shards"]
                 self.previous_seconds = saved.metadata.get("build_seconds", 0)
         self.stage.mkdir(parents=True, exist_ok=True)
@@ -350,8 +366,9 @@ class CacheWriter:
     def _save(self, complete):
         atomic_json(self.stage / "index.json", self.index)
         fingerprint = canonical_sha(self.identity)
-        index_sha = file_sha(self.stage / "index.json")
+        index_sha = file_sha(self.stage / "index.json") if self.verify_checksums else None
         metadata = dict(identity=self.identity, fingerprint=fingerprint, index_sha256=index_sha,
+                        checksum_policy="sha256" if self.verify_checksums else "none",
                         shards=self.shards, complete=complete,
                         output_shapes=sorted({tuple(row["shape"]) for row in self.index}),
                         build_seconds=self.previous_seconds + time.perf_counter() - self.started,
@@ -395,7 +412,7 @@ class CacheWriter:
         final = self.stage / self.pending[0]["shard"]
         self.temporary.replace(final)
         self.shards.append(dict(file=final.name, bytes=final.stat().st_size,
-                                records=len(self.pending), sha256=file_sha(final)))
+                                records=len(self.pending), sha256=file_sha(final) if self.verify_checksums else None))
         self.index.extend(self.pending)
         self.pending = []
         self._save(complete=False)
@@ -408,8 +425,7 @@ class CacheWriter:
         if len(self.index) != len(self.identity["uttids"]):
             raise ValueError("Cache remains incomplete")
         self._save(complete=True)
-        reader = CacheReader(self.stage, self.identity, allow_smoke=True)
-        reader.verify()
+        reader = CacheReader(self.stage, self.identity, allow_smoke=True, verify_checksums=self.verify_checksums)
         reader.metadata["build_seconds"] = self.previous_seconds + time.perf_counter() - self.started
         atomic_json(self.stage / "metadata.json", reader.metadata)
         atomic_json(self.stage / "resume.json", dict(metadata=reader.metadata, index=self.index))

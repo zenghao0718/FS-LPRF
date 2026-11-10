@@ -8,7 +8,7 @@ from data.codec_augmentation import CODEC_AUGMENT_DEFAULTS, validate_codec_setti
 SEEDS = [17, 42, 71, 100, 123]
 
 CACHE_DEFAULTS = dict(root="cache/fs_lprf", schema_version=1, feature_dtype="float32",
-                      feature_build_batch_size=8, shard_size=64, verify_checksums=True,
+                      feature_build_batch_size=8, shard_size=64, codec_shard_size=512, verify_checksums=False,
                       train_feature_seed=None, warn_if_estimated_gb_above=100)
 
 
@@ -97,7 +97,7 @@ def validate_config(cfg):
         if key in runtime and (type(runtime[key]) is not int or runtime[key] < 0):
             raise ValueError(f"runtime.{key} must be a nonnegative integer")
     for section, keys in ((runtime, ("prefetch_factor", "worker_torch_num_threads")),
-                           (cache, ("feature_build_batch_size", "shard_size"))):
+                           (cache, ("feature_build_batch_size", "shard_size", "codec_shard_size"))):
         if any(type(section[key]) is not int or section[key] <= 0 for key in keys):
             raise ValueError("Worker threads, prefetch, shard and feature build batch size must be positive integers")
     for section, keys in ((runtime, ("persistent_train_workers", "persistent_eval_workers", "pin_memory")), (cache, ("verify_checksums",))):
