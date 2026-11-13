@@ -14,6 +14,7 @@ from engine.checkpoint import save_checkpoint, load_checkpoint
 from models.frontend_compat import load_official_checkpoint
 from utils.seed import seed_all
 from utils.provenance import UPSTREAM_COMMIT
+from models.fs_lprf_model import FSLPRF
 
 
 class SyntheticDataset(torch.utils.data.Dataset):
@@ -40,6 +41,9 @@ class SyntheticBackend(torch.nn.Module):
         self.device = torch.device("cpu")
         self.projection = torch.nn.Linear(9, 25 * 7)
         self.seen_batch_sizes = []
+        self.layer_logits = torch.nn.Parameter(torch.zeros(25))
+
+    layer_weights = FSLPRF.layer_weights
 
     def forward(self, source):
         self.seen_batch_sizes.append(len(source["feats"]))
@@ -74,6 +78,7 @@ def test_engine_one_backward_one_update_microbatches_and_independent_episodes(co
         return original_backward(tensor, *args, **kwargs)
     monkeypatch.setattr(torch.Tensor, "backward", backward)
     before = model.projection.weight.detach().clone()
+    before_logits = model.layer_logits.detach().clone()
     with torch.no_grad():
         expected_prototypes = [model.projection(dataset.features[list(episode.support_indices)].squeeze(1))
                                .view(3, 5, 25, 7).mean(1) for episode in episodes]
@@ -84,7 +89,9 @@ def test_engine_one_backward_one_update_microbatches_and_independent_episodes(co
     assert model.seen_batch_sizes == expected_sizes
     assert len(diagnostics) == 8 and np.isfinite(loss) and np.isfinite(norm)
     assert not torch.equal(before, model.projection.weight)
-    assert not torch.equal(diagnostics[0]["alpha"], diagnostics[1]["alpha"])
+    assert all(details["alpha"] is diagnostics[0]["alpha"] for details in diagnostics)
+    assert model.layer_logits.grad.abs().sum() > 0
+    assert not torch.equal(before_logits, model.layer_logits)
     # Different GEMM batch sizes differ by <= 2.4e-7 in float32 on the test host.
     assert all(torch.allclose(details["prototypes"], expected, atol=1e-6, rtol=1e-5) for details, expected in
                zip(diagnostics, expected_prototypes))
@@ -94,8 +101,9 @@ def test_checkpoint_roundtrip_optimizer_scheduler_and_rng(config, tmp_path):
     seed_all(42)
     model = SyntheticBackend()
     optimizer, scheduler = make_optimizer(model, config)
-    model({"feats": torch.randn(2, 1, 9)})["feats"].square().mean().backward()
-    optimizer.step()
+    dataset = SyntheticDataset()
+    episodes = EpisodeSampler(dataset.pools).sample_step()
+    optimize_step(model, dataset, episodes, config, optimizer, 1)
     scheduler.step()
     expected = copy.deepcopy(model.state_dict())
     expected_opt = copy.deepcopy(optimizer.state_dict())
@@ -116,6 +124,18 @@ def test_checkpoint_roundtrip_optimizer_scheduler_and_rng(config, tmp_path):
     assert torch.equal(actual_random[2], expected_random[2])
     # Checkpoint schema is intentionally compatible with weights_only=True.
     assert torch.load(path, weights_only=True)["dev_manifest_sha256"] == "manifest-hash"
+    # Resumed AdamW moments and schedule must reproduce the next real synthetic Step.
+    resumed = SyntheticBackend()
+    resumed_optimizer, resumed_scheduler = make_optimizer(resumed, config)
+    load_checkpoint(path, resumed, resumed_optimizer, resumed_scheduler)
+    assert torch.equal(resumed.layer_weights(), model.layer_weights())
+    optimize_step(model, dataset, episodes, config, optimizer, 2)
+    optimize_step(resumed, dataset, episodes, config, resumed_optimizer, 2)
+    scheduler.step()
+    resumed_scheduler.step()
+    assert all(torch.equal(value, resumed.state_dict()[name]) for name, value in model.state_dict().items())
+    assert resumed_scheduler.state_dict() == scheduler.state_dict()
+    assert resumed_optimizer.param_groups[0]["lr"] == optimizer.param_groups[0]["lr"]
 
 
 def test_scheduler_warmup_cosine_endpoints_and_resume(config):

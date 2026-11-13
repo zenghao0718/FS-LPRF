@@ -43,14 +43,16 @@ def synthetic_model():
         model.num_layers, model.frontend_dim = 25, 1024
         model.time_attn_mlp1 = torch.nn.Parameter(torch.randn(25, 1024, 4) * .02)
         model.bottleneck_proj = torch.nn.Linear(1024, 256)
+        model.layer_logits = torch.nn.Parameter(torch.zeros(25))
         return model.train()
 
 
 def episode_loss_scores(features):
     labels = torch.arange(15) // 5
-    loss, _ = step_loss([(features[:15], labels, features[15:], labels)])
+    alpha = torch.zeros(25).softmax(0)
+    loss, _ = step_loss([(features[:15], labels, features[15:], labels)], alpha)
     binary_labels = torch.tensor([0] * 5 + [1] * 5)
-    task = kshot_task(features[:10], binary_labels)
+    task = kshot_task(features[:10], binary_labels, alpha)
     scores = kshot_scores(features[15:], *task)
     return loss, scores
 
@@ -65,21 +67,25 @@ def test_feature_order_shape_fp32_equivalence_and_gradients():
         assert torch.equal(cached[:, layer], original_hiddens[layer].permute(1, 0, 2))
     online = model({"feats": waves})["feats"]
     online.square().mean().backward()
-    gradients = {name: parameter.grad.clone() for name, parameter in model.named_parameters() if parameter.requires_grad}
+    gradients = {name: parameter.grad.clone() for name, parameter in model.named_parameters()
+                 if parameter.requires_grad and name != "layer_logits"}
     model.zero_grad(set_to_none=True)
     restored = model.forward_from_frontend_features(cached)["feats"]
     torch.testing.assert_close(online, restored, atol=1e-6, rtol=1e-6)
     restored.square().mean().backward()
     assert not model.frontend_model.training
     for name, parameter in model.named_parameters():
+        if name == "layer_logits":
+            assert parameter.grad is None  # Feature-only diagnostics do not use layer weights.
+            continue
         if parameter.requires_grad:
             torch.testing.assert_close(parameter.grad, gradients[name], atol=1e-6, rtol=1e-5)
             assert torch.isfinite(parameter.grad).all() and parameter.grad.abs().sum() > 0
         else:
             assert parameter.grad is None
     assert all(model.time_attn_mlp1.grad[layer].abs().sum() > 0 for layer in range(25))
-    assert set(model.state_dict()) == {"time_attn_mlp1", "bottleneck_proj.weight", "bottleneck_proj.bias"}
-    assert sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad) == 364800
+    assert set(model.state_dict()) == {"time_attn_mlp1", "bottleneck_proj.weight", "bottleneck_proj.bias", "layer_logits"}
+    assert sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad) == 364825
 
 
 def test_fp16_disk_roundtrip_converts_to_fp32_and_reports_loss_scores(tmp_path):

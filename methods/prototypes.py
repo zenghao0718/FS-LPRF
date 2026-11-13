@@ -14,10 +14,3 @@ def build_prototypes(support, labels, num_classes):
 def cosine_logits(query, prototypes):
     """Return [Q,L,C] cosine similarities; no temperature or learned classifier."""
     return F.cosine_similarity(query[:, None], prototypes[None], dim=-1).permute(0, 2, 1)
-
-
-def class_dispersion(support, labels, prototypes):
-    return torch.stack([
-        (1 - F.cosine_similarity(support[labels == c], prototypes[c][None], dim=-1)).mean(0)
-        for c in range(prototypes.shape[0])
-    ])

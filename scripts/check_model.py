@@ -41,7 +41,7 @@ def main():
     assert not model.frontend_model.training
     assert all(not p.requires_grad for p in model.frontend_model.parameters())
     assert set(name for name, p in model.named_parameters() if p.requires_grad) == {
-        "time_attn_mlp1", "bottleneck_proj.weight", "bottleneck_proj.bias"}
+        "time_attn_mlp1", "bottleneck_proj.weight", "bottleneck_proj.bias", "layer_logits"}
     assert model.time_attn_mlp1.shape == (25, 1024, 4)
     assert len({model.time_attn_mlp1[i].data_ptr() for i in range(25)}) == 25
     assert isinstance(model.bottleneck_proj, torch.nn.Linear)
@@ -83,7 +83,7 @@ def main():
             observed["cache_fp16_diagnostic_loss"] = float(fp16_output.square().mean())
             observed["cache_scope"] = "single synthetic WAV; real frozen frontend; diagnostic squared loss, no task metrics"
         # Diagnostic only: validate backend gradients without running an optimizer update.
-        output.square().mean().backward()
+        (output.square().mean(dim=(0, 2)) * model.layer_weights()).sum().backward()
         grads = {}
         for name, param in model.named_parameters():
             if param.requires_grad:

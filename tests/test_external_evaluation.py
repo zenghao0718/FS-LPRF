@@ -214,7 +214,7 @@ def test_scores_prototypes_alpha_metrics_and_loader_reuse(tmp_path, config, monk
             tasks = build_support_tasks(model, features, ds.fake_classes)
             for name in ds.fake_classes:
                 support = torch.cat([features["real"], features[name]])
-                expected = kshot_task(support, torch.tensor([0] * 10 + [1] * 10))
+                expected = kshot_task(support, torch.tensor([0] * 10 + [1] * 10), model.layer_weights())
                 for old, new in zip(expected, tasks[name]):
                     assert torch.equal(old, new)
                 rows = [row for row in saved if row["seed"] == str(seed) and row["fake_class"] == name]
@@ -297,14 +297,15 @@ def cli(monkeypatch):
 
 def fixture_checkpoint(path, model, config):
     from utils.provenance import UPSTREAM_COMMIT
+    from methods.layer_weights import METHOD_VERSION
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(dict(model=model.state_dict(), method_version="2.4", upstream_commit=UPSTREAM_COMMIT,
+    torch.save(dict(model=model.state_dict(), method_version=METHOD_VERSION, upstream_commit=UPSTREAM_COMMIT,
                     config=config, step=800), path)
     return path
 
 
 @pytest.mark.parametrize("mode", ["labeled", "unlabeled"])
-def test_cli_old_checkpoint_reports_and_no_update(tmp_path, config, monkeypatch, cli, mode):
+def test_cli_lw_checkpoint_reports_and_no_update(tmp_path, config, monkeypatch, cli, mode):
     model = FeatureModel()
     checkpoint = fixture_checkpoint(tmp_path / "old_training" / "checkpoints" / "step_0800.pt", model, config)
     before = checkpoint.read_bytes()
@@ -374,6 +375,9 @@ def test_directory_audio_cli_smoke(tmp_path, config, monkeypatch, cli, workers):
             super().__init__()
             self.projection = torch.nn.Linear(8, 25 * 7)
             self.device = torch.device("cpu")
+            self.layer_logits = torch.nn.Parameter(torch.zeros(25))
+
+        layer_weights = FeatureModel.layer_weights
 
         def forward(self, source):
             return {"feats": self.projection(source["feats"][:, 0, ::8000]).reshape(-1, 25, 7)}
@@ -504,8 +508,8 @@ def test_cli_default_seed_reused_across_output_directories(tmp_path, config, mon
                 "--output-dir", str(tmp_path / "bad"), "--seeds", "17,42", "--query-dir", "q"]))
 
 
-def test_speechfake_matches_frozen_pre_refactor_evaluator(tmp_path, config):
-    """Golden baseline came from Git a56b04e, not the current evaluator."""
+def test_speechfake_keeps_protocol_and_matches_independent_lw_scores(tmp_path, config):
+    """Keep the historical schema/IDs; old reliability scores must change for LW."""
     baseline = json.loads((Path(__file__).parent / "fixtures/evaluator_pre_external.json").read_text())
     names = ["real"] + [f"TTS__g{i:02d}" for i in range(32)]
     ids = [f"test/{name}/{i}" for name in names for i in range(65)]
@@ -518,14 +522,49 @@ def test_speechfake_matches_frozen_pre_refactor_evaluator(tmp_path, config):
     ds = FeatureDataset(meta)
     torch.manual_seed(777)
     model = FeatureModel()
+    with torch.no_grad():
+        model.layer_logits.copy_(torch.linspace(-2, 2, 25))
     manifest = load_or_create_manifest(ds, tmp_path / "ep.json", 10, DEV_SEEDS)
     result = evaluate(model, ds, manifest, config, tmp_path, "test")
-    assert result == baseline["summary"]
     with (tmp_path / "test_predictions.csv").open() as handle:
         reader = csv.DictReader(handle)
         assert reader.fieldnames == baseline["prediction_fields"]
         rows = {(row["seed"], row["fake_class"], row["uttid"]): row for row in reader}
     for expected in baseline["predictions"]:
         actual = rows[(expected["seed"], expected["fake_class"], expected["uttid"])]
-        assert float(actual.pop("score")) == pytest.approx(float(expected["score"]), abs=2e-6)
-        assert actual == {key: value for key, value in expected.items() if key != "score"}
+        assert {key: actual[key] for key in ("seed", "fake_class", "uttid", "label")} == {
+            key: expected[key] for key in ("seed", "fake_class", "uttid", "label")}
+    # Independent formula: no kshot_task, cosine_logits, kshot_scores or evaluator helpers.
+    import torch.nn.functional as F
+    from utils.metrics import binary_metrics, macro_metrics, mean_std
+    macros = []
+    with torch.no_grad():
+        def encode(ids):
+            indices = [ds.uttid2idx[uid] for uid in ids]
+            return model({"feats": ds.synthetic_features[indices]})["feats"]
+        alpha = model.layer_logits.exp() / model.layer_logits.exp().sum()
+        for seed in DEV_SEEDS:
+            supports = manifest["supports"][str(seed)]
+            real = encode(supports["real"]).mean(0)
+            per_class = []
+            for name in ds.fake_classes:
+                fake = encode(supports[name]).mean(0)
+                ids = manifest["queries"]["real"] + manifest["queries"][name]
+                query = encode(ids)
+                scores = ((F.cosine_similarity(query, fake[None], dim=-1) -
+                           F.cosine_similarity(query, real[None], dim=-1)) * alpha).sum(-1)
+                labels = [0] * len(manifest["queries"]["real"]) + [1] * len(manifest["queries"][name])
+                for uid, score, label in zip(ids, scores, labels):
+                    actual = rows[(str(seed), name, uid)]
+                    assert float(actual["score"]) == pytest.approx(score.item(), abs=2e-6)
+                    assert int(actual["prediction"]) == int(score >= 0)
+                    assert int(actual["label"]) == label
+                per_class.append(binary_metrics(labels, scores.numpy()))
+            macros.append(dict(seed=seed, **macro_metrics(per_class)))
+    summary = mean_std(macros)
+    assert len(rows) == sum(len(manifest["queries"]["real"]) + len(manifest["queries"][name])
+                            for name in ds.fake_classes) * len(DEV_SEEDS)
+    for metric in summary:
+        assert result["metrics"][metric] == pytest.approx(summary[metric], abs=1e-12)
+    assert result["mean_eer"] == summary["eer"]["mean"]
+    assert result["std_eer"] == summary["eer"]["std"]

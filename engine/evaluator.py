@@ -56,12 +56,13 @@ def extract_support_features(model, dataset, supports, cfg, seed, *, loader):
 def build_support_tasks(model, support_features, fake_classes):
     """Shared task construction for SpeechFake and both external modes."""
     real_support = support_features["real"].to(model.device)
+    alpha = model.layer_weights()
     tasks = {}
     for name in fake_classes:
         fake_support = support_features[name].to(model.device)
         features = torch.cat([real_support, fake_support])
         labels = torch.tensor([0] * len(real_support) + [1] * len(fake_support), device=model.device)
-        tasks[name] = kshot_task(features, labels)
+        tasks[name] = kshot_task(features, labels, alpha)
     return tasks
 
 

@@ -16,7 +16,7 @@ from models.fs_lprf_model import forward_batch
 from methods.loss import step_loss
 from utils.seed import seed_all, preserved_rng
 from utils.logging import configure_logging
-from .checkpoint import load_checkpoint, save_checkpoint
+from .checkpoint import load_checkpoint, save_checkpoint, validate_checkpoint_method
 from .evaluator import evaluate
 from .validation_schedule import (ValidationHistory, check_new_run,
                                   file_sha256, make_run_identity, validation_mode)
@@ -54,7 +54,7 @@ def optimize_step(model, dataset, episodes, cfg, optimizer, step, *, loader=None
         tasks.append((support, torch.tensor(episode.support_labels, device=features.device),
                       query, torch.tensor(episode.query_labels, device=features.device)))
         offset += ns + nq
-    loss, diagnostics = step_loss(tasks)
+    loss, diagnostics = step_loss(tasks, model.layer_weights())
     if not torch.isfinite(loss):
         raise FloatingPointError(f"Non-finite Step loss at {step}")
     with timings.measure("backward_optimizer_seconds") if timings else nullcontext():
@@ -74,6 +74,18 @@ def record_validation(writer, result, mode, step):
                 writer.add_scalar(f"dev/full_macro_{name}_{statistic}",
                                   result["metrics"][name][statistic], step)
     writer.flush()
+
+
+@torch.no_grad()
+def record_layer_weights(writer, model, step):
+    alpha = model.layer_weights()
+    for layer, value in enumerate(alpha.tolist()):
+        writer.add_scalar(f"layer_weight/layer_{layer:02d}", value, step)
+    writer.add_scalar("layer_weight/max", alpha.max().item(), step)
+    writer.add_scalar("layer_weight/min", alpha.min().item(), step)
+    # log_softmax stays finite even when Softmax underflows to zero.
+    entropy = -(alpha * model.layer_logits.log_softmax(dim=0)).sum()
+    writer.add_scalar("layer_weight/entropy", entropy.item(), step)
 
 
 def full_validation(model, dev_ds, manifest, cfg, history, step, writer, logger):
@@ -116,6 +128,7 @@ def run_steps(model, train_ds, dev_ds, sampler, cfg, optimizer, scheduler,
         writer.add_scalar("train/loss", loss, step)
         writer.add_scalar("train/learning_rate", lr, step)
         writer.add_scalar("train/gradient_norm", norm, step)
+        record_layer_weights(writer, model, step)
         logger.info("step=%d loss=%.6f lr=%.8g gradient_norm=%.6f", step, loss, lr, norm)
         episode_log.flush()
         mode = validation_mode(step, cfg["train"])
@@ -167,6 +180,7 @@ def train(cfg, resume=None):
     if resume:
         resume_path = resolve_checkpoint(resume, out)
         metadata = torch.load(resume_path, map_location="cpu", weights_only=True)
+        validate_checkpoint_method(metadata)
         start = metadata["step"]
         if resume_path != history.checkpoint(start).resolve() or metadata.get("run_identity") != identity:
             raise ValueError("Resume must use a matching milestone in the original output directory")

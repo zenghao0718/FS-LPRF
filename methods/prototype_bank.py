@@ -4,7 +4,7 @@ import random
 import torch
 from engine.evaluator import extract_features
 from methods.inference import PrototypeBank
-from methods.prototypes import class_dispersion
+from methods.layer_weights import METHOD_VERSION
 from utils.seed import preserved_rng, seed_all
 from data.evaluation_manifest import dataset_fingerprint
 from utils.provenance import UPSTREAM_COMMIT
@@ -37,7 +37,7 @@ def select_bank_samples(dataset, seed):
 @torch.no_grad()
 def build_prototype_bank(model, dataset, cfg, seed, checkpoint):
     selected = select_bank_samples(dataset, seed)
-    prototypes, dispersions = [], []
+    prototypes = []
     classes = ["real"] + dataset.fake_classes
     was_training = model.training
     try:
@@ -48,14 +48,12 @@ def build_prototype_bank(model, dataset, cfg, seed, checkpoint):
                 # Hold at most one class (1024 x 25 x 256) in CPU memory.
                 features = extract_features(model, dataset, selected[name], cfg, seed)
                 prototype = features.float().mean(0, keepdim=True)
-                labels = torch.zeros(len(features), dtype=torch.long)
                 prototypes.append(prototype[0])
-                dispersions.append(class_dispersion(features.float(), labels, prototype)[0])
     finally:
         model.train(was_training)
     from models.frontend_compat import sha256_file
-    metadata = dict(version=1, method_version="2.4", upstream_commit=UPSTREAM_COMMIT,
+    metadata = dict(version=2, method_version=METHOD_VERSION, upstream_commit=UPSTREAM_COMMIT,
                     checkpoint=str(Path(checkpoint).resolve()), checkpoint_sha256=sha256_file(checkpoint),
                     dataset_fingerprint=dataset_fingerprint(dataset), seed=seed, samples_per_class=1024,
                     real_quotas=REAL_QUOTAS, sample_ids=selected)
-    return PrototypeBank(classes, torch.stack(prototypes), torch.stack(dispersions), metadata)
+    return PrototypeBank(classes, torch.stack(prototypes), model.layer_logits.detach().cpu().clone(), metadata)

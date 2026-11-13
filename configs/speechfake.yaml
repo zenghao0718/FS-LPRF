@@ -79,4 +79,4 @@ runtime:
   prefetch_factor: 2
   pin_memory: true
   worker_torch_num_threads: 1
-  output_dir: /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_waveform_v2
+  output_dir: /root/autodl-tmp/fs_lprf_runs/speechfake_fs_lprf_lw_v1

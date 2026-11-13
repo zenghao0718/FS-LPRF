@@ -8,6 +8,16 @@ import tempfile
 import torch
 from utils.provenance import UPSTREAM_COMMIT
 from utils.seed import capture_rng, restore_rng
+from methods.layer_weights import METHOD_VERSION
+
+
+def validate_checkpoint_method(payload):
+    if (not isinstance(payload, dict) or payload.get("upstream_commit") != UPSTREAM_COMMIT or
+            payload.get("method_version") != METHOD_VERSION):
+        raise ValueError("Incompatible FS-LPRF-LW checkpoint; legacy FS-LPRF checkpoints are not supported")
+    logits = payload.get("model", {}).get("layer_logits")
+    if not isinstance(logits, torch.Tensor) or logits.shape != (25,) or not torch.isfinite(logits).all():
+        raise ValueError("Checkpoint requires 25 finite global layer_logits")
 
 
 def save_checkpoint(path, model, optimizer, scheduler, config, step,
@@ -18,7 +28,7 @@ def save_checkpoint(path, model, optimizer, scheduler, config, step,
     if path.exists() and not overwrite:
         raise FileExistsError(f"Checkpoint already exists; refusing to overwrite: {path}")
     payload = {
-        "version": 1, "method_version": "2.4", "implementation_version": "1.3",
+        "version": 1, "method_version": METHOD_VERSION, "implementation_version": "1.3",
         "model": model.state_dict(), "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(), "config": config, "step": step,
         "train_seed": config["train"]["seed"], "dev_metrics": dev_metrics,
@@ -28,6 +38,7 @@ def save_checkpoint(path, model, optimizer, scheduler, config, step,
     }
     if run_identity is not None:
         payload["run_identity"] = run_identity
+    validate_checkpoint_method(payload)
     if any(key.startswith("frontend_model.") for key in payload["model"]):
         raise ValueError("Frozen frontend must be omitted by the official state_dict implementation")
     # The temporary file belongs to this call, so failure cannot replace a node or
@@ -54,14 +65,12 @@ def save_checkpoint(path, model, optimizer, scheduler, config, step,
 def load_checkpoint(path, model, optimizer=None, scheduler=None, restore_random=False,
                     *, expected_run_identity=None):
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    if (not isinstance(payload, dict) or payload.get("upstream_commit") != UPSTREAM_COMMIT or
-            payload.get("method_version") != "2.4"):
-        raise ValueError("Incompatible FS-LPRF checkpoint")
+    validate_checkpoint_method(payload)
     if expected_run_identity is not None and payload.get("run_identity") != expected_run_identity:
         raise ValueError("Checkpoint run identity does not match this run")
     expected = set(model.state_dict())
     if set(payload["model"]) != expected:
-        raise ValueError("Checkpoint must exactly match trainable Attention and shared Bottleneck keys")
+        raise ValueError("Checkpoint must exactly match Attention, shared Bottleneck and layer_logits keys")
     result = model.load_state_dict(payload["model"], strict=False)
     if result.unexpected_keys or any(not key.startswith("frontend_model.") for key in result.missing_keys):
         raise ValueError(f"Invalid checkpoint keys: {result}")
@@ -132,9 +141,7 @@ def resolve_checkpoint(reference, output_dir):
     if checkpoint_sha256(path) != index["checkpoint_sha256"]:
         raise ValueError("Best checkpoint SHA-256 does not match its index")
     payload = torch.load(path, map_location="cpu", weights_only=True)
-    if (not isinstance(payload, dict) or payload.get("upstream_commit") != UPSTREAM_COMMIT or
-            payload.get("method_version") != "2.4"):
-        raise ValueError("Incompatible best FS-LPRF checkpoint")
+    validate_checkpoint_method(payload)
     for key in ("step", "run_identity", "dev_manifest_sha256", "train_fingerprint"):
         if payload.get(key) != index[key]:
             raise ValueError(f"Best checkpoint {key} does not match its index")

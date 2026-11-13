@@ -78,6 +78,7 @@ def _synthetic_backend():
     model.num_layers = 25
     model.time_attn_mlp1 = torch.nn.Parameter(torch.randn(25, 1024, 4) * 0.02)
     model.bottleneck_proj = torch.nn.Linear(1024, 256)
+    model.layer_logits = torch.nn.Parameter(torch.zeros(25))
     return model
 
 
@@ -107,14 +108,17 @@ def test_pooling_matches_independent_per_layer_per_utterance_calculation_and_gra
         assert parameter.grad.isfinite().all() and parameter.grad.abs().sum() > 0
 
 
-def test_backend_keeps_legacy_parameter_names_and_count():
+def test_backend_keeps_legacy_parameters_and_adds_only_25_logits():
     model = _synthetic_backend()
     assert {key: tuple(value.shape) for key, value in model.state_dict().items()} == {
         "time_attn_mlp1": (25, 1024, 4),
         "bottleneck_proj.weight": (256, 1024),
         "bottleneck_proj.bias": (256,),
+        "layer_logits": (25,),
     }
-    assert sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad) == 364800
+    assert sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad) == 364825
+    assert torch.count_nonzero(model.layer_logits) == 0
+    torch.testing.assert_close(model.layer_weights(), torch.full((25,), .04))
 
 
 def test_audio_keeps_first_channel_and_original_rms_normalization(tmp_path):

@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import re
 import tempfile
+from methods.layer_weights import METHOD_VERSION
 
 
 def validation_mode(step, train_config):
@@ -54,7 +55,7 @@ def make_run_identity(cfg, manifest_hash, light_manifest_hash, train_fingerprint
         config["runtime"].pop(key, None)
     for key in ("root", "shard_size", "codec_shard_size", "verify_checksums", "warn_if_estimated_gb_above"):
         config.get("cache", {}).pop(key, None)
-    payload = dict(version=2, config=config, dev_manifest_sha256=manifest_hash,
+    payload = dict(version=2, method_version=METHOD_VERSION, config=config, dev_manifest_sha256=manifest_hash,
                    light_manifest_sha256=light_manifest_hash, train_fingerprint=train_fingerprint,
                    rng_schema_version=RNG_SCHEMA_VERSION, cache_bindings=cache_bindings)
     return hashlib.sha256(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

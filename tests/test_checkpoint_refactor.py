@@ -19,6 +19,7 @@ class Backend(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.projection = torch.nn.Linear(3, 4)
+        self.layer_logits = torch.nn.Parameter(torch.zeros(25))
 
 
 @pytest.fixture
@@ -53,6 +54,30 @@ def test_node_save_safe_roundtrip_and_best_resolution(saved_node):
     assert payload["step"] == 800 and payload["run_identity"] == index["run_identity"]
     assert not any(key.startswith("frontend_model.") for key in payload["model"])
     assert not list(path.parent.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("change", ["legacy", "missing", "shape", "nonfinite"])
+def test_rejects_old_or_invalid_weights_before_mutation_and_best_resolution(saved_node, change):
+    run_dir, path, args, index = saved_node
+    payload = torch.load(path, map_location="cpu", weights_only=True)
+    if change == "legacy":
+        payload["method_version"] = "2.4"
+    elif change == "missing":
+        del payload["model"]["layer_logits"]
+    elif change == "shape":
+        payload["model"]["layer_logits"] = torch.zeros(24)
+    else:
+        payload["model"]["layer_logits"][0] = float("nan")
+    torch.save(payload, path)
+    model = Backend()
+    before = copy.deepcopy(model.state_dict())
+    with pytest.raises(ValueError, match="Incompatible|layer_logits"):
+        load_checkpoint(path, model)
+    assert all(torch.equal(model.state_dict()[key], value) for key, value in before.items())
+    index["checkpoint_sha256"] = checkpoint_sha256(path)
+    write_index(run_dir, index)
+    with pytest.raises(ValueError, match="Incompatible|layer_logits"):
+        resolve_checkpoint("best", run_dir)
 
 
 def test_existing_node_is_never_overwritten(saved_node):

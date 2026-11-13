@@ -1,8 +1,10 @@
-# FS-LPRF · SpeechFake-BD Phase 1
+# FS-LPRF-LW · SpeechFake-BD
+
+本分支只使用 25 个全局可学习 Softmax 层权重：`layer_logits` 全零初始化，新增 25 个可训练参数；训练与 SpeechFake / ASVspoof5 推理使用同一组权重。原手工可靠性方法保留在 `main`，本分支不提供算法切换。Checkpoint 方法标识为 `FS-LPRF-LW-v1`，拒绝旧方法 Checkpoint。正式实验必须复用上一轮 Codec Offline v1 的已解析配置、数据和缓存，仅更换输出目录；启动、续训和本机测试说明见 [docs/LEARNABLE_LAYER_WEIGHTS.md](docs/LEARNABLE_LAYER_WEIGHTS.md)。
 
 依据 `FS-LPRF_Method_Design_v2.4.md` 与 `FS-LPRF_Phase1_Codex_Implementation_Spec_v1.3.md` 实施。第一阶段仅包含 SpeechFake-BD：3-way episodic training、五种子 Dev 选模与 Test 10-shot。正式训练、Dev/Test 和真实原型库构建由用户在 AutoDL 执行；本地做单元测试、已有 XLS-R 小批量 Smoke Test，以及独立 Real 目录的数据加载基准；Real 基准不加载模型或报告分类指标。
 
-数据管线已按《数据缓存与 DataLoader 加速实施规范 v1.0》更新：默认 Train/Dev Waveform Cache、Test 原始 WAV 在线处理；XLS-R 全部在线，训练 Worker 跨 Step 复用，验证每种子一个 Loader。正式配置和构建入口不接受隐藏状态缓存。方法计算、实验预算与原 Checkpoint 参数键保持不变。完整配置、构建/检查/基准命令及运行边界见 [docs/DATA_CACHE.md](docs/DATA_CACHE.md)，本机实施与验收见 [docs/CACHE_IMPLEMENTATION_REPORT.md](docs/CACHE_IMPLEMENTATION_REPORT.md)。
+数据管线已按《数据缓存与 DataLoader 加速实施规范 v1.0》更新：默认 Train/Dev Waveform Cache、Test 原始 WAV 在线处理；XLS-R 全部在线，训练 Worker 跨 Step 复用，验证每种子一个 Loader。正式配置和构建入口不接受隐藏状态缓存。LW 仅替换层权重，实验预算和数据管线保持不变。完整配置、构建/检查/基准命令及运行边界见 [docs/DATA_CACHE.md](docs/DATA_CACHE.md)，此前缓存实施与验收见 [docs/CACHE_IMPLEMENTATION_REPORT.md](docs/CACHE_IMPLEMENTATION_REPORT.md)。
 
 ## 项目布局与运行入口
 
@@ -18,10 +20,10 @@
 - `data/augmentation.py`：RIR 1/3、RawBoost Algorithm 5 为 1/5，独立抽样，同时触发时先 RIR 后 RawBoost；RIR 候选严格来自 OpenSLR 28 的四份 `rir_list` 文本索引。`noise_prob=1/5` 表示 RawBoost Algorithm 5 的触发概率，不使用 OpenSLR 28 的普通环境噪声文件。
 - `data/codec_augmentation.py` / `data/codec_cache.py`：可选 Train-only 在线/离线真实编解码，默认关闭并保持 Baseline 随机数与身份。离线版本从完整 Train Waveform Cache 构建，每条固定一种 Codec/预设；训练以 50% 概率读原版或编码版，之后仍执行原有裁剪、RIR、RawBoost。Dev/Test 不启用，标签、模型、损失和优化器不变。依赖安装见 [docs/AUTODL.md](docs/AUTODL.md)，小规模构建/校验/续建、测速和开发单种子 Dev 见 [docs/OFFLINE_CODEC.md](docs/OFFLINE_CODEC.md)。
 - `models/xlsr.py`、`xlsr_layers.py`、`xlsr_attention.py`：官方 Fairseq XLS-R-300M 的卷积、Transformer、自注意力及必要基础组件，直接加载原始官方权重并保留全部参数名称。未整合 Whisper、HuBERT、AASIST、FACodec 或其他无关模型。
-- `models/fs_lprf_model.py`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention 与共享 `Linear(1024,256)`；仍只有 364800 个可训练参数，训练 Checkpoint 仍排除冻结前端。
+- `models/fs_lprf_model.py`：完整 25 组 Hidden States、逐层独立 4-head 时间 Attention、共享 `Linear(1024,256)` 与 25 个全局层权重 Logits；共 364825 个可训练参数，训练 Checkpoint 仍排除冻结前端。
 - `utils/metrics.py`：整合官方 DET/EER，保留稳定排序、阈值和数值约定。
 
-来源、作者、逐文件映射和已有许可声明见 [docs/CODE_PROVENANCE.md](docs/CODE_PROVENANCE.md)。`utils/provenance.py` 仅保存来源 commit 与官方权重信息；既有 Checkpoint/原型库中的 `upstream_commit` 字段及其值保持不变，兼容原有恢复与 Best 索引。
+来源、作者、逐文件映射和已有许可声明见 [docs/CODE_PROVENANCE.md](docs/CODE_PROVENANCE.md)。`utils/provenance.py` 仅保存来源 commit 与官方权重信息；`upstream_commit` 字段保持不变。LW 的恢复与 Best 索引保留原有完整保护机制，同时检查新方法身份和层权重参数。
 
 ## 环境
 
@@ -177,4 +179,4 @@ ASVspoof2019 LA、2021 DF、ASVspoof5 Track-1 Evaluation 将保留原始音频�
 
 ## 0-shot 接口（本阶段仅合成测试）
 
-`methods.inference` 提供参数化 K-shot、33 类 PrototypeBank 与 0-shot 分数；0-shot 在每层取 32 个 Fake 原型的最大相似度，再减 Real 并使用统计 α 融合。`scripts/build_prototype_bank.py` 已实现训练集无增强构建：Real 从 AISHELL-1、AISHELL-3、LibriTTS、VCTK 各不放回抽取 256 条，共 1024 条，仍作为一个 Real 类；32 个 Fake 类各不放回抽取 1024 条。无需 CommonVoice，任一来源或类别容量不足均明确报错，不重复使用音频补足配额。它记录最终 Checkpoint、样本 ID、数据指纹和版本。本阶段不运行真实构建或 0-shot 实验，不包含其他数据集、基线或消融。
+`methods.inference` 提供参数化 K-shot、33 类 PrototypeBank 与 0-shot 分数；0-shot 在每层取 32 个 Fake 原型的最大相似度，再减 Real 并使用 LW Checkpoint 的全局 α 融合。Bank 保存相同 Checkpoint 的 Logits 快照，旧统计权重 Bank 会被拒绝。`scripts/build_prototype_bank.py` 保留训练集无增强构建：Real 从 AISHELL-1、AISHELL-3、LibriTTS、VCTK 各不放回抽取 256 条，共 1024 条，仍作为一个 Real 类；32 个 Fake 类各不放回抽取 1024 条。容量不足明确报错，不重复使用音频补足配额。它记录最终 Checkpoint、样本 ID、数据指纹和版本。本次不运行真实构建或 0-shot 实验。

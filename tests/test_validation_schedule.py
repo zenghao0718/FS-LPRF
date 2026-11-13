@@ -14,12 +14,16 @@ from engine.checkpoint import load_checkpoint, resolve_checkpoint
 from engine.validation_schedule import (ValidationHistory, check_new_run,
     make_run_identity, milestone_steps, validation_mode)
 from utils.seed import seed_all, capture_rng
+from models.fs_lprf_model import FSLPRF
 
 
 class CounterModel(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.counter = torch.nn.Parameter(torch.zeros(()))
+        self.layer_logits = torch.nn.Parameter(torch.zeros(25))
+
+    layer_weights = FSLPRF.layer_weights
 
 
 class CounterScheduler:

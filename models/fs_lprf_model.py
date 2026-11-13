@@ -10,6 +10,7 @@ from torch import nn
 from torch.nn import functional as F
 from einops import rearrange
 from .xlsr import XLSR
+from methods.layer_weights import layer_weights
 
 
 class FSLPRF(nn.Module):
@@ -42,7 +43,12 @@ class FSLPRF(nn.Module):
         nn.init.xavier_uniform_(self.time_attn_mlp1)
         self.to(self.device)
         self.bottleneck_proj = nn.Linear(self.frontend_dim, options["bottleneck_dim"])
+        self.layer_logits = nn.Parameter(torch.zeros(25))
         self.to(self.device)
+
+    def layer_weights(self):
+        """Episode-independent global weights; keep the Softmax gradient intact."""
+        return layer_weights(self.layer_logits)
 
     def train(self, mode=True):
         super().train(mode)

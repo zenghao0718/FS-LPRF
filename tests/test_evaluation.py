@@ -8,6 +8,7 @@ from data.evaluation_manifest import load_or_create_manifest
 from engine.evaluator import evaluate
 from methods.prototype_bank import select_bank_samples, REAL_QUOTAS
 from utils.seed import seed_all, capture_rng
+from models.fs_lprf_model import FSLPRF
 
 
 class FeatureDataset(torch.utils.data.Dataset):
@@ -32,6 +33,9 @@ class FeatureModel(torch.nn.Module):
         super().__init__()
         self.proj = torch.nn.Linear(9, 25 * 7)
         self.device = torch.device("cpu")
+        self.layer_logits = torch.nn.Parameter(torch.zeros(25))
+
+    layer_weights = FSLPRF.layer_weights
 
     def forward(self, source):
         return dict(feats=self.proj(source["feats"].squeeze(1)).view(-1, 25, 7))
