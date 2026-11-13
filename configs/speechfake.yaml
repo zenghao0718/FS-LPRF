@@ -9,10 +9,10 @@ data:
   trim_silence: true
   do_augment: true
   augment_type: rawboost
-  # Train-only codec round-trip. enabled=false reproduces the original baseline.
+  # Train-only offline Codec; reuse the existing Codec Offline v1 cache.
   codec_augment:
-    enabled: false
-    mode: online
+    enabled: true
+    mode: offline
     probability: 0.5
     codecs: [mp3, opus, amr, encodec]
     sample_rate: 16000

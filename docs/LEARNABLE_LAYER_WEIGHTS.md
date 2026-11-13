@@ -14,7 +14,7 @@ TensorBoard 按原训练日志节奏（每 Step）记录 `layer_weight/layer_00`
 
 ## AutoDL 正式运行（本次未执行）
 
-先在 AutoDL 切换到 `feature/learnable-layer-weights`。**不要直接使用默认 YAML 开始对照实验**：其中 Codec 默认关闭。本地无法确认上一轮运行的真实路径；将以下 `PREVIOUS_RUN` 改成已完成的 Codec Offline v1 实验目录，用其 `config_resolved.yaml` 精确复用数据路径、Waveform/Codec 缓存、增强、微批次、Worker、随机种子和验证设置。不得覆盖旧输出或加载其 Checkpoint。
+先在 AutoDL 切换到 `feature/learnable-layer-weights`。默认 YAML 已启用 Offline Codec，但不能仅凭默认配置认定与上一轮完全一致。本地未找到上一轮 `config_resolved.yaml`，因此尚未完成真实历史配置的逐项核对。将以下 `PREVIOUS_RUN` 改成已完成的 Codec Offline v1 实验目录，用其 `config_resolved.yaml` 精确复用数据路径、Waveform/Codec 缓存、增强、微批次、Worker、随机种子和验证设置。不得覆盖旧输出或加载其 Checkpoint。
 
 ```bash
 export PREVIOUS_RUN=/实际路径/上一轮_Codec_Offline_v1_实验目录
@@ -42,6 +42,9 @@ assert check == previous, '除输出目录外不得改变上一轮配置'
 target = Path(os.environ['LW_CONFIG'])
 assert not target.exists(), '保留已生成的正式配置，勿意外覆盖'
 save_config(cfg, target)
+reloaded = load_config(target)
+reloaded['runtime']['output_dir'] = previous['runtime']['output_dir']
+assert reloaded == previous, '保存并重新加载后必须仍然只改变输出目录'
 print(target, '->', out)
 PY
 
