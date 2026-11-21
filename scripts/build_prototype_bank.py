@@ -5,11 +5,11 @@ from data.speechfake_dataset import SpeechFakeDataset
 from data.waveform_cache import open_waveform_cache
 from models.fs_lprf_model import FSLPRF
 from engine.checkpoint import load_checkpoint, resolve_checkpoint
-from methods.prototype_bank import build_prototype_bank
+from methods.prototype_bank import build_prototype_bank, select_bank_samples
 
 
 def main():
-    parser = common_parser("Offline 33-class prototype bank; implemented for later work, not part of Phase 1 experiments")
+    parser = common_parser("Build the offline 33-class reference bank for 0-shot evaluation")
     parser.add_argument("--checkpoint", required=True, help="best, or the already selected Best node path")
     parser.add_argument("--seed", type=int, default=17)
     parser.add_argument("--output", required=True)
@@ -20,6 +20,7 @@ def main():
         raise ValueError("0-shot bank construction requires the already selected Best checkpoint")
     # The bank remains unaugmented; use the same full Train waveforms after WAV removal.
     dataset = SpeechFakeDataset(cfg["data"], "train", train_mode=False)
+    select_bank_samples(dataset, args.seed)  # Report metadata shortages before opening caches or the model.
     if cfg["data"]["train_cache_mode"] == "waveform":
         dataset.use_cache(open_waveform_cache(dataset, cfg), "waveform")
     model = FSLPRF(cfg)

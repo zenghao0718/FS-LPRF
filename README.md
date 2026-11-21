@@ -177,4 +177,4 @@ ASVspoof2019 LA、2021 DF、ASVspoof5 Track-1 Evaluation 将保留原始音频�
 
 ## 0-shot 接口（本阶段仅合成测试）
 
-`methods.inference` 提供参数化 K-shot、33 类 PrototypeBank 与 0-shot 分数；0-shot 在每层取 32 个 Fake 原型的最大相似度，再减 Real 并使用统计 α 融合。`scripts/build_prototype_bank.py` 已实现训练集无增强构建：Real 从 AISHELL-1、AISHELL-3、LibriTTS、VCTK 各不放回抽取 256 条，共 1024 条，仍作为一个 Real 类；32 个 Fake 类各不放回抽取 1024 条。无需 CommonVoice，任一来源或类别容量不足均明确报错，不重复使用音频补足配额。它记录最终 Checkpoint、样本 ID、数据指纹和版本。本阶段不运行真实构建或 0-shot 实验，不包含其他数据集、基线或消融。
+`scripts/build_prototype_bank.py` 从未增强的 SpeechFake-BD Train 构建 33 类参考库。`scripts/evaluate_zeroshot.py` 使用该参考库和相同的 Best Checkpoint 对 ASVspoof5 Track 1 按 Attack 评分。参考库的五来源配额、构建命令和评估输出见 [0-shot 评估说明](docs/EXTERNAL_EVALUATION.md#10-asvspoof5-track-1-独立-0-shot-评估)。

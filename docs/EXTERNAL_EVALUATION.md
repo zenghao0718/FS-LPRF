@@ -226,4 +226,48 @@ SpeechFake 内部 evaluate.py 和外部两种模式共用 `engine.evaluator.eval
 
 输入范围是矩形文本表格。CSV/TSV 支持标准引号；混合空白模式按空白切词，不支持字段内带空格或引号，应改用 CSV/TSV。嵌套 JSON/XML、归档内音频、任意非表格协议及可执行解析规则不在本次范围；可先准备标准清单。路径必须在当前运行主机可访问，不自动挂载或猜测其他主机的目录。
 
-复现需保留音频字节、原始清单顺序、输入配置、模型/官方前端权重与软件环境。清单 SHA256 不等于逐音频内容哈希；不同 CUDA/库版本不承诺逐位一致。本次不执行完整外部正式评估，无 Support 的单音频推理属于独立场景，不在当前 10-shot 方法内。
+复现需保留音频字节、原始清单顺序、输入配置、模型/官方前端权重与软件环境。清单 SHA256 不等于逐音频内容哈希。不同 CUDA/库版本不承诺逐位一致。
+
+## 10. ASVspoof5 Track 1 独立 0-shot 评估
+
+0-shot 复用 SpeechFake-BD Dev 选出的 Best Checkpoint 和从 SpeechFake-BD Train 离线构建的固定参考库。ASVspoof5 清单中的每条语音都用作 Query。主实验 10-shot 由每个目标系统的 Real/Fake Support 生成任务原型和层权重，继续使用前述入口。
+
+### 构建参考原型库
+
+准备包含 `train.txt` 和 `train.tsv` 的 SpeechFake-BD Train 目录，以及该配置所指训练运行的 Best Checkpoint、官方 XLS-R 权重和未增强 Train 音频或匹配的 waveform cache。先核实真实元数据中的 Real 来源和 32 个 Fake 类的容量。
+
+- Real 共 1,024 条。AISHELL-1、AISHELL-3、CommonVoice、LibriTTS 各 205 条，VCTK 204 条。元数据中的 `Aishell`、`Aishell3` 和 `VCTK-Corpus` 分别对应 AISHELL-1、AISHELL-3 和 VCTK。
+- 每个 Fake 类各 1,024 条，按元数据原名排序。所有 33,792 个样本 ID 唯一，抽样不放回。若来源或类别容量不足，构建在加载模型前报出配额和实际数量。
+- 旧版四来源 Train 缺少 CommonVoice 时，无法构建符合附录 A 的参考库。应在下一阶段核实完整 Train 元数据是否包含该来源及足够样本。
+
+`CFG` 指向本次使用的配置，`TRAIN_MANIFESTS` 指向实际清单目录，`TRAIN_RUN` 指向已有训练运行，`CKPT` 指向该运行 Best 索引选中的实际 Checkpoint 文件，`FRONTEND` 指向官方 XLS-R 权重。若原始 Train 音频仍在线且无需 waveform cache，可设置 `--set data.train_cache_mode=none`。给 `BANK` 指定希望保存的独立 `.pt` 文件路径。
+
+```bash
+python scripts/build_prototype_bank.py \
+  --config "$CFG" --checkpoint "$CKPT" --seed 17 --output "$BANK" \
+  --set "runtime.output_dir=$TRAIN_RUN" \
+  --set "data.data_path=$TRAIN_MANIFESTS" --set "model.frontend_path=$FRONTEND"
+```
+
+参考库采用 `PrototypeBank` 的 PyTorch 格式，可在 CPU 上用 weights-only 模式加载。它保存 Real 在首位的类别顺序、`[33,25,256]` 原型、`[33,25]` 类内离散度、Checkpoint SHA256、数据指纹、抽样种子和每类完整样本 ID。构建与评分均使用冻结 XLS-R、已训练的逐层 Attention Pooling 和共享 Bottleneck。
+
+### 运行外部评分
+
+`ASV_PROTOCOL` 指向 Track 1 Evaluation 清单，音频位置由现有 YAML 解析。指定实际 Best 文件以及使用它构建的库。默认 Query 种子为 42，用于确定性音频视图和加载器。输出目录必须为新目录。
+
+```bash
+python scripts/evaluate_zeroshot.py \
+  --config "$CFG" --manifest "$ASV_PROTOCOL" \
+  --mapping configs/external/asvspoof5.yaml --group-by attack_id \
+  --checkpoint "$CKPT" --prototype-bank "$BANK" --seed 42 \
+  --set "model.frontend_path=$FRONTEND" --output-dir "$ZERO_SHOT_RESULTS"
+```
+
+每条音频只提取一次特征。各层用 32 个 Fake 原型中的最大余弦相似度减去 Real 相似度，再用参考库的固定层权重加权求和。分数达到零即判 Fake。所有分数产生后才使用标签与 Attack ID 计算指标，每个 Fake Attack 与同一组 Real 分数配对。EER、AUC、AP、ACC 分别按 Attack 计算，再对有效 Attack 等权取 Macro。无法计算指标的 Attack 会显式标记，所有 Attack 都无效时运行失败。
+
+- `zeroshot_run.json` 记录运行状态、配置及输入映射、随机种子、固定阈值、模型和参考库身份、源码身份和耗时。
+- `prototype_bank_info.json` 记录参考库身份、类别、采样元数据、张量形状和 25 个层权重。
+- `zeroshot_predictions.csv` 每条 Query 一行，保存路径、真实标签、原始 Attack/System ID、连续分数及零阈值预测。
+- `zeroshot_per_attack.csv` 保存各 Attack 的样本数、指标、状态和用于报告 EER 的阈值。
+- `zeroshot_summary.json` 保存等权 Macro 和样本、Attack 数量。
+- `failures.jsonl` 记录无效 Attack 或运行异常。只有全部输出写完，运行状态才会标记为 `complete`。

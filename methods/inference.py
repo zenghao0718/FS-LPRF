@@ -54,9 +54,9 @@ def bank_from_features(features_by_class, metadata=None):
     return PrototypeBank(classes, torch.stack(prototypes), torch.stack(dispersions), metadata or {})
 
 
-def zeroshot_scores(query, bank):
+def zeroshot_scores(query, bank, *, alpha=None):
     prototypes = bank.prototypes.to(query.device)
-    alpha = bank.alpha.to(query.device)
+    alpha = (bank.alpha if alpha is None else alpha).to(query.device)
     logits = cosine_logits(query, prototypes)
     fake = logits[:, :, 1:].max(-1).values
     return ((fake - logits[:, :, 0]) * alpha).sum(-1)
