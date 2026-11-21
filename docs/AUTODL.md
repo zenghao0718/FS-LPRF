@@ -138,7 +138,7 @@ RIR 概率仍为 1/3，`noise_prob=1/5` 仍指 RawBoost Algorithm 5 的触发概
 
 用户完成 SpeechFake-BD 清理后，将无表头的 `train.tsv/train.txt/dev.tsv/dev.txt/test.tsv/test.txt` 放在例如 `/root/autodl-tmp/speechfake/manifests`。TSV 为 `uttid<TAB>audio_absolute_path`；TXT 为 `uttid<TAB>origin_ds<TAB>speaker<TAB>attacker<TAB>label`，详细约定见 README。三个 split 不得交叉使用同一音频。
 
-BD baseline 的 Real 仍是一个类别，来源为 AISHELL-1、AISHELL-3、LibriTTS、VCTK。独立 0-shot 参考库按附录 A 要求使用五个 Train 来源，包含 CommonVoice。构建前需核实完整 Train 元数据及各来源容量，详见 [0-shot 评估说明](EXTERNAL_EVALUATION.md#10-asvspoof5-track-1-独立-0-shot-评估)。
+SpeechFake-BD Train 的 Real 是一个类别，来源为 AISHELL-1、AISHELL-3、LibriTTS、VCTK。0-shot 参考库从四个 Real 来源各抽取 256 条，32 个 Fake 类各抽取 1,024 条，均不放回。无需 CommonVoice，请勿从 SpeechFake-MD 补入。构建前核实 Train 元数据及容量，详见 [0-shot 评估说明](EXTERNAL_EVALUATION.md#10-asvspoof5-track-1-独立-0-shot-评估)。
 
 唯一配置是 `configs/speechfake.yaml`。训练协议不变，资源路径是：
 

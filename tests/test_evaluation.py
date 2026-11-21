@@ -65,8 +65,8 @@ def test_evaluator_fixed_manifest_predictions_macro_and_rng_restoration(dataset,
 def bank_dataset():
     dataset = SimpleNamespace(split="train", do_augment=False, class_indices={"real": []},
                               uttids=[], uttid2info={}, fake_classes=[f"NV__g{i:02d}" for i in range(32)])
-    # Appendix A sources, with the metadata spellings observed in the local sample.
-    for source in ("Aishell", "Aishell3", "CommonVoice", "LibriTTS", "VCTK-Corpus"):
+    # The four BD Train sources, using their metadata spellings.
+    for source in ("Aishell", "Aishell3", "LibriTTS", "VCTK-Corpus"):
         for number in range(260):
             uid = f"{source}_{number}"
             dataset.class_indices["real"].append(len(dataset.uttids))
@@ -80,8 +80,9 @@ def bank_dataset():
 
 def test_bank_sampling_uses_exact_real_source_quotas_without_replacement(bank_dataset):
     dataset = bank_dataset
-    assert REAL_QUOTAS == {"AISHELL-1": 205, "AISHELL-3": 205, "CommonVoice": 205, "LibriTTS": 205, "VCTK": 204}
-    expected_raw = {"Aishell": 205, "Aishell3": 205, "CommonVoice": 205, "LibriTTS": 205, "VCTK-Corpus": 204}
+    assert REAL_QUOTAS == {"AISHELL-1": 256, "AISHELL-3": 256, "LibriTTS": 256, "VCTK": 256}
+    expected_raw = {"Aishell": 256, "Aishell3": 256, "LibriTTS": 256, "VCTK-Corpus": 256}
+    assert "CommonVoice" not in {info["origin_ds"] for info in dataset.uttid2info.values()}
     selected = select_bank_samples(dataset, 17)
     assert len(selected) == 33
     assert set(selected) == {"real", *dataset.fake_classes}
@@ -94,28 +95,20 @@ def test_bank_sampling_uses_exact_real_source_quotas_without_replacement(bank_da
     assert selected == select_bank_samples(dataset, 17)
 
 
-@pytest.mark.parametrize("source,name,required", [
-    ("Aishell", "AISHELL-1", 205), ("Aishell3", "AISHELL-3", 205),
-    ("CommonVoice", "CommonVoice", 205), ("LibriTTS", "LibriTTS", 205), ("VCTK-Corpus", "VCTK", 204),
+@pytest.mark.parametrize("source,name", [
+    ("Aishell", "AISHELL-1"), ("Aishell3", "AISHELL-3"), ("LibriTTS", "LibriTTS"), ("VCTK-Corpus", "VCTK"),
 ])
-def test_bank_sampling_reports_each_real_source_shortage(bank_dataset, source, name, required):
+def test_bank_sampling_reports_each_real_source_shortage(bank_dataset, source, name):
     indexes = [index for index in bank_dataset.class_indices["real"]
                if bank_dataset.uttid2info[bank_dataset.uttids[index]]["origin_ds"] == source]
-    removed = set(indexes[required - 1:])
+    removed = set(indexes[255:])
     bank_dataset.class_indices["real"] = [index for index in bank_dataset.class_indices["real"]
                                            if index not in removed]
     with pytest.raises(ValueError, match="capacity mismatch") as error:
         select_bank_samples(bank_dataset, 17)
     message = str(error.value)
-    assert f"'{name}': {{'required': {required}, 'available': {required - 1}}}" in message
-    assert f"'{source}': {required - 1}" in message
-
-
-def test_bank_sampling_rejects_missing_commonvoice(bank_dataset):
-    real = bank_dataset.class_indices["real"]
-    real[:] = [i for i in real if bank_dataset.uttid2info[bank_dataset.uttids[i]]["origin_ds"] != "CommonVoice"]
-    with pytest.raises(ValueError, match="'CommonVoice': \\{'required': 205, 'available': 0"):
-        select_bank_samples(bank_dataset, 17)
+    assert f"'{name}': {{'required': 256, 'available': 255}}" in message
+    assert f"'{source}': 255" in message
 
 
 def test_bank_sampling_checks_global_id_uniqueness(bank_dataset):

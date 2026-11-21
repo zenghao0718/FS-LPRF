@@ -54,7 +54,8 @@ def validate_bank(bank, checkpoint_hash):
         raise ValueError("Prototype-bank Checkpoint SHA256 does not match the evaluation Checkpoint")
     if (bank.metadata.get("real_quotas") != REAL_QUOTAS or
             bank.metadata.get("samples_per_class") != SAMPLES_PER_CLASS):
-        raise ValueError("Prototype bank must use the Appendix A Real quotas and 1024 samples per class")
+        raise ValueError("Prototype bank must use the current BD four-source Real quotas (256 each) "
+                         "and 1024 samples per class")
     sample_ids = bank.metadata.get("sample_ids", {})
     if set(sample_ids) != set(classes) or any(len(ids) != SAMPLES_PER_CLASS for ids in sample_ids.values()):
         raise ValueError("Bank metadata must record the 1024 sample IDs for every class")

@@ -236,9 +236,9 @@ SpeechFake 内部 evaluate.py 和外部两种模式共用 `engine.evaluator.eval
 
 准备包含 `train.txt` 和 `train.tsv` 的 SpeechFake-BD Train 目录，以及该配置所指训练运行的 Best Checkpoint、官方 XLS-R 权重和未增强 Train 音频或匹配的 waveform cache。先核实真实元数据中的 Real 来源和 32 个 Fake 类的容量。
 
-- Real 共 1,024 条。AISHELL-1、AISHELL-3、CommonVoice、LibriTTS 各 205 条，VCTK 204 条。元数据中的 `Aishell`、`Aishell3` 和 `VCTK-Corpus` 分别对应 AISHELL-1、AISHELL-3 和 VCTK。
+- Real 共 1,024 条，从 SpeechFake-BD Train 的 AISHELL-1、AISHELL-3、LibriTTS、VCTK 各不放回抽取 256 条。元数据中的 `Aishell`、`Aishell3` 和 `VCTK-Corpus` 分别对应 AISHELL-1、AISHELL-3 和 VCTK。
 - 每个 Fake 类各 1,024 条，按元数据原名排序。所有 33,792 个样本 ID 唯一，抽样不放回。若来源或类别容量不足，构建在加载模型前报出配额和实际数量。
-- 旧版四来源 Train 缺少 CommonVoice 时，无法构建符合附录 A 的参考库。应在下一阶段核实完整 Train 元数据是否包含该来源及足够样本。
+- 当前 SpeechFake-BD Train 无需 CommonVoice，请勿从 SpeechFake-MD 补入。评估入口会拒绝使用五来源配额构建的旧参考库。
 
 `CFG` 指向本次使用的配置，`TRAIN_MANIFESTS` 指向实际清单目录，`TRAIN_RUN` 指向已有训练运行，`CKPT` 指向该运行 Best 索引选中的实际 Checkpoint 文件，`FRONTEND` 指向官方 XLS-R 权重。若原始 Train 音频仍在线且无需 waveform cache，可设置 `--set data.train_cache_mode=none`。给 `BANK` 指定希望保存的独立 `.pt` 文件路径。
 

@@ -211,7 +211,7 @@ def test_no_real_reports_invalid_attacks_and_failed_run(evaluation, cli):
 
 
 @pytest.mark.parametrize("problem,expected", [
-    ("checkpoint", "Checkpoint SHA256"), ("old_quota", "Appendix A Real quotas"),
+    ("checkpoint", "Checkpoint SHA256"), ("old_quota", "current BD four-source Real quotas"),
     ("class_order", "classes in order"), ("shape", "shape"), ("nan", "finite"),
     ("duplicates", "duplicate sample IDs"),
 ])
@@ -220,7 +220,9 @@ def test_invalid_bank_fails_before_audio(evaluation, cli, problem, expected):
     if problem == "checkpoint":
         bank.metadata["checkpoint_sha256"] = "wrong"
     elif problem == "old_quota":
-        bank.metadata["real_quotas"] = {"AISHELL-1": 256, "AISHELL-3": 256, "LibriTTS": 256, "VCTK": 256}
+        bank.metadata["real_quotas"] = {
+            "AISHELL-1": 205, "AISHELL-3": 205, "CommonVoice": 205, "LibriTTS": 205, "VCTK": 204,
+        }
     elif problem == "class_order":
         bank.classes[-2:] = bank.classes[-2:][::-1]
     elif problem == "shape":
