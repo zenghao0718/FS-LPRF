@@ -192,6 +192,8 @@ class RawBoostAudioAugmentation:
 
     def convolve_rir(self, audio):
         rir_path = np.random.choice(self.rir)
+        if getattr(self, "record_trace", False):
+            self._chosen_rir_path = str(rir_path)
         rir, sample_rate = get_audio(rir_path, to_mono=True, trim_sil=False)
 
         augmented = signal.convolve(audio.numpy(), rir.numpy(),
@@ -205,15 +207,22 @@ class RawBoostAudioAugmentation:
     def __call__(self, audio):
         self.audio_power = float((audio**2).mean())
         rir_prob = np.random.rand()
-        if rir_prob < self.rir_prob:
+        rir_applied = rir_prob < self.rir_prob
+        if rir_applied:
             #print("convolve_rir")
             audio, rir = self.convolve_rir(audio)
         noise_prob = np.random.rand()
-        if noise_prob < self.noise_prob:
+        rawboost_applied = noise_prob < self.noise_prob
+        if rawboost_applied:
             #print("add_noises")
             np_audio = audio.squeeze(0).numpy()
             sr = 16_000
             noisy_audio = self.process_Rawboost_feature(np_audio, sr, self.rawboost_args, self.rawboost_args.algo)
             audio = torch.from_numpy(noisy_audio).unsqueeze(0).to(torch.float32)
+        if getattr(self, "record_trace", False):
+            self.last_trace = dict(rir_applied=bool(rir_applied),
+                                   rir_path=getattr(self, "_chosen_rir_path", "") if rir_applied else "",
+                                   rawboost_applied=bool(rawboost_applied),
+                                   rir_probability=self.rir_prob, rawboost_probability=self.noise_prob)
         #print(type(audio), audio.shape)
         return audio

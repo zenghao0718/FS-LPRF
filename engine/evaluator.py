@@ -14,16 +14,42 @@ from utils.logging import write_csv
 from utils.seed import seed_all, preserved_rng
 
 
+_FEATURE_PROGRESS = None
+
+
+def set_feature_progress(callback):
+    """Parent-process progress hook. Workers never consult it."""
+    global _FEATURE_PROGRESS
+    _FEATURE_PROGRESS = callback
+
+
 def feature_batches(model, dataset, ids, cfg, seed, *, loader=None):
     indices = view_tokens(dataset, ids, seed, getattr(dataset, "validation_mode", "full"))
     if loader is not None and (loader.dataset is not dataset or loader.seed != seed):
         raise ValueError("Reusable evaluation loader must belong to this dataset view and seed")
     owner = nullcontext(loader) if loader is not None else ReusableAudioLoader(
         dataset, cfg, training=False, seed=seed)
+    sink = getattr(dataset, "augmentation_trace_sink", None)
+    progress = _FEATURE_PROGRESS
+    done, last = 0, 0.0
+    started = time.perf_counter()
     with owner as reusable:
         stream = reusable.for_indices(indices)
         try:
             for batch in stream:
+                traces = batch.get("augmentation_trace")
+                if sink is not None:
+                    if not traces or [row["uttid"] for row in traces] != list(batch["uttids"]):
+                        raise ValueError("Augmentation trace is missing or misaligned with utterance IDs")
+                    sink.extend(traces)
+                elif traces:
+                    raise ValueError("Augmentation trace was returned without a prototype-bank sink")
+                if progress is not None:
+                    done += len(batch["uttids"])
+                    now = time.perf_counter()
+                    if now - last >= 30 or done == len(indices):
+                        last = now
+                        progress(done, len(indices), now - started)
                 yield batch["uttids"], forward_batch(model, batch)
         finally:
             stream.close()

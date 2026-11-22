@@ -155,17 +155,40 @@ class SpeechFakeDataset(GeneralFAD):
         if self.codec_mode == "offline":
             if self.codec_cache_reader is None or self.cache_mode != "waveform":
                 raise ValueError("Offline Codec requires bound original and codec waveform caches")
-            audio = (self.codec_cache_reader.get(uttid) if np.random.rand() < self.codec_probability
-                     else self.load_preprocessed_waveform(uttid))
+            # One Bernoulli draw, identical to the previous inline condition.
+            use_codec = np.random.rand() < self.codec_probability
+            audio = (self.codec_cache_reader.get(uttid) if use_codec else self.load_preprocessed_waveform(uttid))
+            if getattr(self, "record_augmentation", False):
+                self._remember_codec_trace(uttid, use_codec)
         else:
+            if getattr(self, "record_augmentation", False):
+                raise ValueError("Augmentation traces require the offline codec cache, not online encoding")
             audio = self.codec_augmentor(self.load_preprocessed_waveform(uttid))
         if self.fix_len:
             audio = self.sample_segment(audio)
         else:
             audio = audio[:, :self.max_len]
         if self.do_augment and self.train_mode:
+            if getattr(self, "record_augmentation", False):
+                self.augmentor.record_trace = True
             audio = self.augmentor(audio)
+            if getattr(self, "record_augmentation", False):
+                trace = self.augmentor.last_trace
+                self._augmentation_trace.update(rir_applied=trace["rir_applied"], rir_path=trace["rir_path"],
+                                               rawboost_applied=trace["rawboost_applied"])
         return audio
+
+    def _remember_codec_trace(self, uttid, use_codec):
+        record = self.codec_cache_reader.rows[uttid]["codec"]
+        param = record.get("param", "")
+        if isinstance(param, bool):
+            pass
+        elif hasattr(param, "item"):
+            param = param.item()
+        self._augmentation_trace = dict(uttid=uttid, codec_applied=bool(use_codec),
+                                        codec_family=record.get("family", ""), codec_variant=record.get("variant", ""),
+                                        codec_param=param, codec_status=record.get("status", ""),
+                                        rir_applied=False, rir_path="", rawboost_applied=False)
 
     @staticmethod
     def collate_fn(batch):
@@ -175,7 +198,10 @@ class SpeechFakeDataset(GeneralFAD):
             return dict(uttids=[sample["uttid"] for sample in batch],
                         feats=torch.stack([sample["feats"] for sample in batch]), input_kind="xlsr_feature",
                         labels=torch.tensor([sample["label"] for sample in batch]))
-        return GeneralFAD.collate_fn(batch)
+        collated = GeneralFAD.collate_fn(batch)
+        if collated is not None and batch and "augmentation_trace" in batch[0]:
+            collated["augmentation_trace"] = [dict(sample["augmentation_trace"]) for sample in batch]
+        return collated
 
     def __getitem__(self, index):
         if isinstance(index, tuple):
@@ -195,6 +221,8 @@ class SpeechFakeDataset(GeneralFAD):
                 raise ValueError("Expected official fixed-length mono waveform [1,64000]")
             if not torch.isfinite(result["feats"]).all():
                 raise ValueError("Audio contains non-finite values after official preprocessing")
+            if getattr(self, "record_augmentation", False):
+                result["augmentation_trace"] = dict(self._augmentation_trace)
             return result
         except Exception as error:
             raise RuntimeError(f"Audio read failed: split={self.split}, uttid={uttid}, path={self.uttid2path[uttid]}") from error
